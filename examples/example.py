@@ -71,8 +71,42 @@ for subject_idx, subject in enumerate(subjects):
 fig.tight_layout()
 plt.show(block=False)
 
+############################
+# Helper for plotting scores
+def plot_scores(sources, title):
+
+    results = []
+    for subject_idx in range(n_subjects):
+        subject_results = []
+        for unmixed_ts in sources[subject_idx].T:
+            coefs = [np.corrcoef(unmixed_ts, orig_ts)[0, 1] for orig_ts in S.T]
+            subject_results.append(np.max(np.abs(coefs)))
+        results.append(subject_results)
+
+    labels = ['Source ' + str(idx+1) for idx in range(n_sources)]
+    x = np.arange(len(labels))
+    width = 0.1
+    min_ = 0.8
+
+    fig, ax = plt.subplots()
+    for subject_idx in range(n_subjects):
+        values = np.array(results[subject_idx]) - min_
+        rects = ax.bar(x - width + width*subject_idx, values, width, 
+                       label=('Subject ' + str(subject_idx+1)), bottom=min_) 
+
+    ax.set_ylim((min_, 1.0))
+
+    ax.set_ylabel('Scores')
+    ax.set_title(title + ' (' + str(np.round(np.mean(results), 3)) + ')')
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels)
+    ax.legend()
+
+    plt.show()
+
+
 ############################################
-# Unmix the data with temporal concatenation
+# Unmix the data with temporal concatenation and temporal ica
 concatenated = np.concatenate([data[0] for data in subjects])
 
 ica = FastICA(n_components=3)
@@ -82,10 +116,8 @@ subjects_sources = np.vsplit(sources, n_subjects)
 
 mixing = ica.components_.T
 
-##############################################
-# Plot spatial heatmaps of the TC-ICA mixing
 fig, axes = plt.subplots(1, n_sources)
-fig.suptitle('Temporal concatenation ICA mixing')
+fig.suptitle('TC-TICA')
 for source_idx in range(n_sources):
     ax = axes[source_idx]
     heatmap = mixing[:, source_idx].reshape(spatial_shape)
@@ -96,58 +128,62 @@ for source_idx in range(n_sources):
 fig.tight_layout()
 plt.show(block=False)
 
-##############################################
-# Plot sources of the TC-ICA
 fig, axes = plt.subplots(n_subjects)
-fig.suptitle('Sources with temporal concatenation')
+fig.suptitle('TC-TICA')
 for subject_idx, source in enumerate(subjects_sources):
     ax = axes[subject_idx]
-    ax.set_title(str(subject_idx+1))
+    ax.set_title('Subject ' + str(subject_idx+1))
     for ts_idx, ts in enumerate(source.T):
         ax.plot(ts, color=colors[ts_idx], lw=0.5)
 
 fig.tight_layout()
 plt.show(block=False)
 
-##############################
-# How close are the estimates?
-results = []
+title = 'TC-TICA'
+plot_scores(subjects_sources, title)
+
+
+############################################
+# Unmix the data with spatial concatenation and temporal ICA
+concatenated = np.concatenate([data[0] for data in subjects], axis=1)
+
+ica = FastICA(n_components=3)
+ica.fit(concatenated)
+
+subjects_sources = []
+subjects_mixing = []
 for subject_idx in range(n_subjects):
-    subject_results = []
-    for unmixed_ts in subjects_sources[subject_idx].T:
-        coefs = [np.corrcoef(unmixed_ts, orig_ts)[0, 1] for orig_ts in S.T]
-        subject_results.append(np.max(np.abs(coefs)))
-    results.append(subject_results)
+    start = subject_idx*int(concatenated.shape[1]/3)
+    end = (subject_idx+1)*int(concatenated.shape[1]/3)
+    mixing = ica.components_[:, start:end]
+    source = subjects[subject_idx][0] @ mixing.T
+    subjects_sources.append(source)
+    subjects_mixing.append(mixing.T)
 
-labels = ['Source ' + str(idx+1) for idx in range(n_sources)]
-x = np.arange(len(labels))
-width = 0.1
-
-def autolabel(rects):
-    """ """
-    for rect in rects:
-        height = rect.get_height()
-        ax.annotate('{}'.format(height),
-                    xy=(rect.get_x() + rect.get_width() / 2, height),
-                    xytext=(0, 3),  # 3 points vertical offset
-                    textcoords="offset points",
-                    ha='center', va='bottom')
-
-min_ = 0.8
-fig, ax = plt.subplots()
+fig, axes = plt.subplots(n_subjects, n_sources)
+fig.suptitle('SC-TICA')
 for subject_idx in range(n_subjects):
-    values = np.array(results[subject_idx]) - min_
-    rects = ax.bar(x - width + width*subject_idx, values, width, 
-                   label=('Subject ' + str(subject_idx+1)), bottom=min_) 
-    autolabel(rects)
+    for source_idx in range(n_sources):
+        ax = axes[subject_idx, source_idx]
+        heatmap = subjects_mixing[subject_idx][:, source_idx].reshape(spatial_shape)
+        title = 'Source ' + str(source_idx+1)
+        ax.set_title(title)
+        ax.imshow(heatmap, cmap='hot', interpolation='nearest')
 
-ax.set_ylim((min_, 1.0))
+fig.tight_layout()
+plt.show(block=False)
 
-ax.set_ylabel('Scores')
-ax.set_title('Scores with temporal concatenation')
-ax.set_xticks(x)
-ax.set_xticklabels(labels)
-ax.legend()
+fig, axes = plt.subplots(n_subjects)
+fig.suptitle('SC-TICA')
+for subject_idx, source in enumerate(subjects_sources):
+    ax = axes[subject_idx]
+    ax.set_title('Subject ' + str(subject_idx+1))
+    for ts_idx, ts in enumerate(source.T):
+        ax.plot(ts, color=colors[ts_idx], lw=0.5)
 
-plt.show()
+fig.tight_layout()
+plt.show(block=False)
+
+title = "SC-TICA"
+plot_scores(subjects_sources, title)
 
