@@ -5,6 +5,9 @@ import scipy.signal
 from sklearn.decomposition import FastICA
 
 
+from hpica import compute_hpica
+
+
 random_state = 4
 colors = ['red', 'steelblue', 'green', 'pink']
 
@@ -124,6 +127,15 @@ def plot_scores(results, title):
     ax.legend()
     plt.show()
 
+
+############################################
+# Unmix the data with hierarchical probabilistic temporal ICA
+Y = [data[0] for data in subjects]
+
+results = compute_hpica(Y, n_components=n_sources, random_state=random_state)
+
+import pdb; pdb.set_trace()
+print("miau")
 
 ############################################
 # Unmix the data with temporal concatenation and temporal ica
@@ -270,5 +282,7 @@ plt.show(block=False)
 
 title = "TC-SICA"
 plot_scores(results, title)
+
+
 
 
