@@ -129,10 +129,12 @@ def plot_scores(results, title):
 
 
 ############################################
-# Unmix the data with hierarchical probabilistic temporal ICA
-Y = [data[0] for data in subjects]
+# Unmix the data with hierarchical probabilistic spatial ICA
+Y = [data[0].T for data in subjects]
 
-results = compute_hpica(Y, n_components=n_sources, random_state=random_state)
+X = np.zeros((n_subjects, 2))
+
+results = compute_hpica(Y, X, n_components=n_sources, random_state=random_state)
 
 import pdb; pdb.set_trace()
 print("miau")
