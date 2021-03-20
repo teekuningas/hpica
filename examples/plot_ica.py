@@ -13,7 +13,7 @@ colors = ['red', 'steelblue', 'green', 'pink']
 ##################
 # Generate sources and mixings
 # n_samples = 1000
-n_samples = 300
+n_samples = 1000
 time = np.linspace(0, 8, n_samples)
 
 s1 = np.sin(2 * time)
@@ -139,7 +139,7 @@ def plot_scores(results, title):
 # Unmix the data with hierarchical probabilistic spatial ICA
 Y = [data[0] for data in subjects]
 
-results = compute_hpica(Y, n_components=n_sources, random_state=random_state, n_gaussians=3, n_iter=30, whiten=True)
+results = compute_hpica(Y, n_components=n_sources, random_state=random_state, n_gaussians=3, n_iter=50, whiten=True)
 
 ica_mixing = results[0]
 pca_means = results[6]
@@ -188,9 +188,6 @@ plt.show(block=False)
 
 title = "Hierarchical SICA"
 plot_scores(results, title)
-
-
-
 
 
 ############################################

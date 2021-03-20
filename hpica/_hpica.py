@@ -25,12 +25,13 @@ def _mvn_pdf(x, mu, cov):
     part2 = (-1/2) * ((x-mu).T.dot(inv(cov))).dot((x-mu))
     return part1 * np.exp(part2)
 
+
 def _mvn_pdf_scipy(x, mu, cov):
     """ Scipy implementation """
     return multivariate_normal.pdf(x, mu, cov)
 
 def _whiten(Ybar, n_sources):
-    """
+    """ Uses non-probabilistic PCA to whiten (in contrary to Guo et al. 2013)
     """
     n_subjects = len(Ybar)
     wh_means = []
@@ -49,7 +50,8 @@ def _whiten(Ybar, n_sources):
     return Y, wh_means, wh_matrix
 
 def _initial_guess(Y, n_sources, n_gaussians, random_state):
-    """
+    """ Makes a random guess. Could use the decomposition of e.g FastICA as the
+    initial guess too.
     """
     n_subjects = len(Y)
     n_samples = Y[0].shape[1]
@@ -73,9 +75,11 @@ def _initial_guess(Y, n_sources, n_gaussians, random_state):
     return mus, vars_, pis, E, D, A
 
 
-def compute_hpica(Ybar, n_components=10, n_iter=10, n_gaussians=2,
+def compute_hpica(Ybar, n_components=10, n_iter=10, n_gaussians=3,
                   whiten=True, random_state=None, eps=0.001):
     """
+    Compute hierarhical pprobabilistic ICA from Guo et al. 2013
+
     Ybar needs to be a list of datasets of shape (n_features, n_samples)
     """
     n_sources = n_components
@@ -94,39 +98,48 @@ def compute_hpica(Ybar, n_components=10, n_iter=10, n_gaussians=2,
 
     # Demean and whiten the input variables
     # Note that whitening matrix unmixes and A mixes..
-
     if whiten:
         Y, wh_means, wh_matrix = _whiten(Ybar, n_sources=n_sources)
         n_features = Y[0].shape[0]
     else:
         Y = Ybar
 
-    # Get initial guess
+    # Get a initial guess
     mus, vars_, pis, E, D, A = _initial_guess(
         Y, n_sources, n_gaussians, random_state)
 
     start_time = time.time()
 
     # Use EM-algorithm (exact version)
+
+    # Introduce helper matrices to handle joint distributions
     B = np.kron(np.ones(n_subjects)[:, np.newaxis], np.eye(n_sources))
     J = np.block([np.zeros((n_sources, n_sources*n_subjects)), np.eye(n_sources)])
     Q = np.block([np.eye(n_subjects*n_sources), B])
     P = np.block([[Q], [J]])
-
     KE = np.kron(np.eye(n_subjects), E)
     KD = np.kron(np.eye(n_subjects), D)
     KU = np.kron(np.ones(n_subjects+1)[:, np.newaxis], np.eye(n_sources))
 
+    # z space has m^q elements
     z_space = list(
         itertools.product(*[range(n_gaussians) for lst in 
                             range(n_sources)]))
     for iter_idx in range(n_iter):
 
+        # Start with the E-step, where
+        # we compute E(s|Y,z) and p(z|Y)
+        # that will easily give us
+        # the expectations needed in the M-step.
+        # We do not actually compute the conditional expectation
+        # of the complete log likelihood as it is not
+        # needed in the M-step.
+
+        # A-dependent helper matrices
         AA = block_diag(*A)
         AAB = AA @ B
         R = AA @ KD @ AA.T + KE
         X = np.block([AA, AAB])
-
 
         # Compute full joint distribution of p(s|Y,z) to facilitiate use of
         # p(s|Y,z)-based expectations in the M-step. p(z|Y) is need in the M-step too.
@@ -137,6 +150,7 @@ def compute_hpica(Ybar, n_components=10, n_iter=10, n_gaussians=2,
 
         for v in range(n_samples):
 
+            # YY is a column vector with subject-specific data concatenated
             YY = np.concatenate([Y[i][:, v] for i in range(n_subjects)])[:, np.newaxis]
 
             E_s_Y_z_v = []
@@ -144,6 +158,7 @@ def compute_hpica(Ybar, n_components=10, n_iter=10, n_gaussians=2,
             p_z_Y_v = []
             for z in z_space:
 
+                # Initialize mu, pi and sigma conditional to z.
                 Sigma_z = np.zeros((n_sources, n_sources))
                 pi_z = np.zeros((n_sources, 1))
                 mu_z = np.zeros((n_sources, 1))
@@ -152,6 +167,8 @@ def compute_hpica(Ybar, n_components=10, n_iter=10, n_gaussians=2,
                     pi_z[l] = pis[l, z[l]]
                     mu_z[l] = mus[l, z[l]]
 
+                # Here we introduce p(gamma|z,Y) which has
+                # error terms of a collapsed model
                 Sigma_gamma = block_diag(KD, Sigma_z)
                 Sigma_gamma_z_Y = pinv(X.T @ pinv(KE) @ X + 
                                        pinv(Sigma_gamma))
@@ -159,8 +176,15 @@ def compute_hpica(Ybar, n_components=10, n_iter=10, n_gaussians=2,
                                   pinv(KE) @ 
                                   (YY - AAB @ mu_z))
 
+                # Using that, compute p(s|Y,z), where
+                # s has subject-specific sources and
+                # the population sources concatenated,
+                # ((n_subjects*n_sources + n_sources) x 1)
                 E_s_Y_z_v.append(P @ Eeta_gamma_z_Y + KU @ mu_z)
                 Var_s_Y_z_v.append(P @ Sigma_gamma_z_Y @ P.T)
+
+                # Then compute p(z|Y), which can be used 
+                # to integrate z out of the expectations.
 
                 g_mu = AAB @ mu_z
                 g_sigma = (AAB @ Sigma_z @ AAB.T + R) 
@@ -191,7 +215,8 @@ def compute_hpica(Ybar, n_components=10, n_iter=10, n_gaussians=2,
         print("Elapsed in E: " + str(time.time() - start_time))
         start_time = time.time()
 
-        # Update parameters (M-step):
+        # Update parameters (M-step).
+        # All of these are kindly derived in the Guo et al. 2013.
         A_new = np.zeros(A.shape)
         for i in range(n_subjects):
             first = []
@@ -213,6 +238,7 @@ def compute_hpica(Ybar, n_components=10, n_iter=10, n_gaussians=2,
             A_new[i] = np.sum(first, axis=0) @ pinv(np.sum(second, axis=0))
             A_new[i] = _sym_decorrelation(A_new[i])
 
+        E_new = np.eye(E.shape)
         elems = []
         for i in range(n_subjects):
             for v in range(n_samples):
@@ -230,7 +256,7 @@ def compute_hpica(Ybar, n_components=10, n_iter=10, n_gaussians=2,
 
                 elems.append(Y_i_v.T @ Y_i_v - 2 * Y_i_v.T @ A_new[i] @ E_ksi_i_Y + 
                              np.trace(A_new[i].T @ A_new[i] @ E_ksi2_i_Y))
-        E_new = np.eye(E.shape[0]) * np.sum(elems) / (n_features * n_subjects * n_samples)
+        E_new = E_new * np.sum(elems) / (n_features * n_subjects * n_samples)
 
         D_new = np.zeros(D.shape)
         for l in range(n_sources):
@@ -293,7 +319,6 @@ def compute_hpica(Ybar, n_components=10, n_iter=10, n_gaussians=2,
                                          p_z_Y[v][z_idx] * Var_s_Y_z[v][z_idx][n_subjects*n_sources + l, n_subjects*n_sources + l])
                     v_sum.append(np.sum(z_sum))
                 vars_new[l, j] = np.sum(v_sum) / (n_samples*pis_new[l, j]) - mus_new[l, j]**2
-
 
         print("Elapsed in M: " + str(time.time() - start_time))
 
