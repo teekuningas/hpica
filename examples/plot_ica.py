@@ -1,4 +1,6 @@
 import matplotlib.pyplot as plt
+import seaborn as sns
+import pandas as pd
 import numpy as np
 import scipy.signal
 
@@ -13,16 +15,29 @@ colors = ['red', 'steelblue', 'green', 'pink']
 ##################
 # Generate sources and mixings
 # n_samples = 1000
-n_samples = 1000
-time = np.linspace(0, 8, n_samples)
+n_samples = 200
+time = np.linspace(0, 20, n_samples)
 
-s1 = np.sin(2 * time)
-s2 = np.sign(np.sin(3 * time))
-s3 = scipy.signal.sawtooth(2 * np.pi * time)
-s4 = np.sin(5 * time)
+# s1 = np.sin(2 * time)
+# s2 = np.sign(np.sin(3 * time))
+# s3 = scipy.signal.sawtooth(2 * np.pi * time)
+# s4 = np.sin(5 * time)
+
+s1 = np.sin(2 * time + 100)
+s2 = np.sin(3 * time + 200)
+s3 = np.sin(5 * time + 300)
+s4 = np.sin(7 * time + 400)
+
+random_state.shuffle(s1)
+random_state.shuffle(s2)
+random_state.shuffle(s3)
+random_state.shuffle(s4)
 
 S = np.c_[s1, s2, s3, s4]
 S = (S - S.mean(axis=0)) / S.std(axis=0)
+
+sns.pairplot(pd.DataFrame(S))
+plt.show()
 
 n_sources = S.shape[1]
 
@@ -38,10 +53,10 @@ for idx in range(n_subjects):
 
     padded_template_s1 = np.pad(template, pad_width=[(1,1), (0, n_subjects+10)])
 
-    padded_template_s2 = np.pad(template, pad_width=[(1,1), (idx+4, n_subjects+6-idx)])
-    padded_template_s3 = np.pad(template, pad_width=[(1,1),(idx+7, n_subjects+3-idx)])
-    # padded_template_s2 = np.pad(template, pad_width=[(1,1), (4, n_subjects+6)])
-    # padded_template_s3 = np.pad(template, pad_width=[(1,1), (8, n_subjects+2)])
+    # padded_template_s2 = np.pad(template, pad_width=[(1,1), (idx+4, n_subjects+6-idx)])
+    # padded_template_s3 = np.pad(template, pad_width=[(1,1),(idx+7, n_subjects+3-idx)])
+    padded_template_s2 = np.pad(template, pad_width=[(1,1), (4, n_subjects+6)])
+    padded_template_s3 = np.pad(template, pad_width=[(1,1), (8, n_subjects+2)])
 
     padded_template_s4 = np.pad(template, pad_width=[(1,1), (n_subjects+10,0)])
 
@@ -55,21 +70,20 @@ for idx in range(n_subjects):
     # Add subject-specific delay two components 3 and 4
     subject_s1 = s1.copy()
     subject_s2 = s2.copy()
-    subject_s3 = np.roll(s3, int(idx*n_samples/10))
-    subject_s4 = np.roll(s4, int(idx*n_samples/10))
-    # subject_s3 = s3.copy()
-    # subject_s4 = s4.copy()
+    # subject_s3 = np.roll(s3, int(idx*n_samples/10))
+    # subject_s4 = np.roll(s4, int(idx*n_samples/10))
+    subject_s3 = s3.copy()
+    subject_s4 = s4.copy()
 
     subject_S = np.c_[subject_s1, subject_s2, subject_s3, subject_s4]
     subject_S = (subject_S - subject_S.mean(axis=0)) / subject_S.std(axis=0)
 
     # Generate observations from sources and mixing
     X = np.dot(subject_S, A.T)
-    X += 0.5 * random_state.normal(size=X.shape)
+    X += 0.2 * random_state.normal(size=X.shape)
     X = (X - X.mean(axis=0)) / X.std(axis=0)
 
     subjects.append((X, A))
-
 
 ##############################################
 # Plot spatial heatmaps of the mixing matrices
@@ -134,12 +148,129 @@ def plot_scores(results, title):
     ax.legend()
     plt.show()
 
+############################################
+# Unmix the data with spatial concatenation and temporal ICA
+concatenated = np.concatenate([data[0] for data in subjects], axis=1)
+
+# from sklearn.decomposition import PCA
+# pca = PCA(n_components=n_sources)
+# pca = PCA(n_components=8, random_state=random_state)
+# whitened = pca.fit_transform(concatenated)
+# ica = FastICA(n_components=n_sources, random_state=random_state)
+# ica.fit(whitened)
+
+ica = FastICA(n_components=n_sources, random_state=random_state)
+ica.fit(concatenated)
+
+subjects_ts = []
+subjects_maps = []
+for subject_idx in range(n_subjects):
+    start = subject_idx*int(concatenated.shape[1]/n_subjects)
+    end = (subject_idx+1)*int(concatenated.shape[1]/n_subjects)
+
+    mixing = ica.components_[:, start:end]
+    sources = subjects[subject_idx][0] @ mixing.T
+    # mixing = ica.components_ @ pca.components_[:, start:end]
+    # sources = subjects[subject_idx][0] @ mixing.T
+
+    subjects_ts.append(sources)
+    subjects_maps.append(mixing.T)
+
+results = compute_results(subjects_ts)
+ordering = np.argsort([comp[0] for comp in results[0]])
+
+subjects_ts = [sub[:, ordering] for sub in subjects_ts]
+subjects_maps = [sub[:, ordering] for sub in subjects_maps]
+
+fig, axes = plt.subplots(n_subjects, n_sources)
+fig.suptitle('SC-TICA')
+for subject_idx in range(n_subjects):
+    for source_idx in range(n_sources):
+        ax = axes[subject_idx, source_idx]
+        heatmap = subjects_maps[subject_idx][:, source_idx].reshape(spatial_shape)
+        title = 'Subject ' + str(subject_idx+1) + ', source ' + str(source_idx+1)
+        ax.set_title(title)
+        ax.imshow(heatmap, cmap='hot', interpolation='nearest')
+
+fig.tight_layout()
+plt.show(block=False)
+
+fig, axes = plt.subplots(n_subjects)
+fig.suptitle('SC-TICA')
+for subject_idx, source in enumerate(subjects_ts):
+    ax = axes[subject_idx]
+    ax.set_title('Subject ' + str(subject_idx+1))
+    for ts_idx, ts in enumerate(source.T):
+        ax.plot(ts, color=colors[ts_idx], lw=0.5)
+
+fig.tight_layout()
+plt.show(block=False)
+
+title = "SC-TICA"
+plot_scores(results, title)
+
+
+############################################
+# Unmix the data with hierarchical probabilistic temporal ICA
+Y = [data[0].T for data in subjects]
+
+results = compute_hpica(Y, n_components=n_sources, random_state=random_state, n_iter=30, n_gaussians=2, whiten=True)
+
+
+ica_mixing = results[0]
+pca_means = results[6]
+pca_whitening = results[7]
+
+subjects_ts = []
+subjects_maps = []
+for subject_idx in range(n_subjects):
+    demeaned = Y[subject_idx] - pca_means[subject_idx][:, np.newaxis]
+    mixing = pca_whitening[subject_idx].T @ ica_mixing[subject_idx]
+    unmixing = mixing.T
+    sources = (unmixing @ demeaned) 
+    
+    subjects_ts.append(sources.T)
+    subjects_maps.append(mixing)
+
+results = compute_results(subjects_ts)
+ordering = np.argsort([comp[0] for comp in results[0]])
+
+subjects_ts = [sub[:, ordering] for sub in subjects_ts]
+subjects_maps = [sub[:, ordering] for sub in subjects_maps]
+
+fig, axes = plt.subplots(n_subjects, n_sources)
+fig.suptitle('Hierarchical TICA')
+for subject_idx in range(n_subjects):
+    for source_idx in range(n_sources):
+        ax = axes[subject_idx, source_idx]
+        heatmap = subjects_maps[subject_idx][:, source_idx].reshape(spatial_shape)
+        title = 'Subject ' + str(subject_idx+1) + ', source ' + str(source_idx+1)
+        ax.set_title(title)
+        ax.imshow(heatmap, cmap='hot', interpolation='nearest')
+
+fig.tight_layout()
+plt.show(block=False)
+
+fig, axes = plt.subplots(n_subjects)
+fig.suptitle('Hierarchical TICA')
+for subject_idx, source in enumerate(subjects_ts):
+    ax = axes[subject_idx]
+    ax.set_title('Subject ' + str(subject_idx+1))
+    for ts_idx, ts in enumerate(source.T):
+        ax.plot(ts, color=colors[ts_idx], lw=0.5)
+
+fig.tight_layout()
+plt.show(block=False)
+
+title = "Hierarchical TICA"
+plot_scores(results, title)
+
 
 ############################################
 # Unmix the data with hierarchical probabilistic spatial ICA
 Y = [data[0] for data in subjects]
 
-results = compute_hpica(Y, n_components=n_sources, random_state=random_state, n_gaussians=3, n_iter=50, whiten=True)
+results = compute_hpica(Y, n_components=n_sources, random_state=random_state, n_gaussians=2, n_iter=30, whiten=True)
 
 ica_mixing = results[0]
 pca_means = results[6]
@@ -242,111 +373,6 @@ title = "TC-SICA"
 plot_scores(results, title)
 
 
-############################################
-# Unmix the data with spatial concatenation and temporal ICA
-concatenated = np.concatenate([data[0] for data in subjects], axis=1)
 
-ica = FastICA(n_components=n_sources, random_state=random_state)
-ica.fit(concatenated)
-
-subjects_ts = []
-subjects_maps = []
-for subject_idx in range(n_subjects):
-    start = subject_idx*int(concatenated.shape[1]/n_subjects)
-    end = (subject_idx+1)*int(concatenated.shape[1]/n_subjects)
-    mixing = ica.components_[:, start:end]
-    sources = subjects[subject_idx][0] @ mixing.T
-
-    subjects_ts.append(sources)
-    subjects_maps.append(mixing.T)
-
-results = compute_results(subjects_ts)
-ordering = np.argsort([comp[0] for comp in results[0]])
-
-subjects_ts = [sub[:, ordering] for sub in subjects_ts]
-subjects_maps = [sub[:, ordering] for sub in subjects_maps]
-
-fig, axes = plt.subplots(n_subjects, n_sources)
-fig.suptitle('SC-TICA')
-for subject_idx in range(n_subjects):
-    for source_idx in range(n_sources):
-        ax = axes[subject_idx, source_idx]
-        heatmap = subjects_maps[subject_idx][:, source_idx].reshape(spatial_shape)
-        title = 'Subject ' + str(subject_idx+1) + ', source ' + str(source_idx+1)
-        ax.set_title(title)
-        ax.imshow(heatmap, cmap='hot', interpolation='nearest')
-
-fig.tight_layout()
-plt.show(block=False)
-
-fig, axes = plt.subplots(n_subjects)
-fig.suptitle('SC-TICA')
-for subject_idx, source in enumerate(subjects_ts):
-    ax = axes[subject_idx]
-    ax.set_title('Subject ' + str(subject_idx+1))
-    for ts_idx, ts in enumerate(source.T):
-        ax.plot(ts, color=colors[ts_idx], lw=0.5)
-
-fig.tight_layout()
-plt.show(block=False)
-
-title = "SC-TICA"
-plot_scores(results, title)
-
-
-
-############################################
-# Unmix the data with hierarchical probabilistic temporal ICA
-Y = [data[0].T for data in subjects]
-
-results = compute_hpica(Y, n_components=n_sources, random_state=random_state, n_iter=50, whiten=True)
-
-ica_mixing = results[0]
-pca_means = results[6]
-pca_whitening = results[7]
-
-subjects_ts = []
-subjects_maps = []
-for subject_idx in range(n_subjects):
-    demeaned = Y[subject_idx] - pca_means[subject_idx][:, np.newaxis]
-    mixing = pca_whitening[subject_idx].T @ ica_mixing[subject_idx]
-    unmixing = mixing.T
-    sources = (unmixing @ demeaned) 
-    
-    subjects_ts.append(sources.T)
-    subjects_maps.append(mixing)
-
-results = compute_results(subjects_ts)
-ordering = np.argsort([comp[0] for comp in results[0]])
-
-subjects_ts = [sub[:, ordering] for sub in subjects_ts]
-subjects_maps = [sub[:, ordering] for sub in subjects_maps]
-
-fig, axes = plt.subplots(n_subjects, n_sources)
-fig.suptitle('Hierarchical TICA')
-for subject_idx in range(n_subjects):
-    for source_idx in range(n_sources):
-        ax = axes[subject_idx, source_idx]
-        heatmap = subjects_maps[subject_idx][:, source_idx].reshape(spatial_shape)
-        title = 'Subject ' + str(subject_idx+1) + ', source ' + str(source_idx+1)
-        ax.set_title(title)
-        ax.imshow(heatmap, cmap='hot', interpolation='nearest')
-
-fig.tight_layout()
-plt.show(block=False)
-
-fig, axes = plt.subplots(n_subjects)
-fig.suptitle('Hierarchical TICA')
-for subject_idx, source in enumerate(subjects_ts):
-    ax = axes[subject_idx]
-    ax.set_title('Subject ' + str(subject_idx+1))
-    for ts_idx, ts in enumerate(source.T):
-        ax.plot(ts, color=colors[ts_idx], lw=0.5)
-
-fig.tight_layout()
-plt.show(block=False)
-
-title = "Hierarchical TICA"
-plot_scores(results, title)
 
 

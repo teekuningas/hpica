@@ -30,6 +30,12 @@ def _mvn_pdf_scipy(x, mu, cov):
     """ Scipy implementation """
     return multivariate_normal.pdf(x, mu, cov)
 
+def _mvn_cdf_scipy(x, mu, cov):
+    """ Scipy implementation """
+    return multivariate_normal.cdf(x, mu, cov)
+
+
+
 def _whiten(Ybar, n_sources):
     """ Uses non-probabilistic PCA to whiten (in contrary to Guo et al. 2013)
     """
@@ -39,10 +45,13 @@ def _whiten(Ybar, n_sources):
     Y = []
     for i in range(n_subjects):
         pca = PCA(n_components=n_sources, whiten=True)
-        Y.append(pca.fit_transform(Ybar[i].T).T)  # (n_components, n_samples)
+        Y.append(pca.fit_transform(Ybar[i].T).T)  # (n_sources, n_samples)
         wh_means.append(pca.mean_)  # (n_features)
         wh_matrix.append((pca.components_ / pca.singular_values_[:, np.newaxis]) * 
-                         np.sqrt(Ybar[i].shape[1]))  # (n_components, n_features), 
+                         np.sqrt(Ybar[i].shape[1]))  # (n_sources, n_features), 
+
+        print("Explained variance for: " + str(i+1) + 'th subject: ' + 
+              str(np.sum(pca.explained_variance_ratio_)))
 
         # Check that all is fine
         np.testing.assert_allclose(wh_matrix[i] @ (Ybar[i] - wh_means[i][:, np.newaxis]), Y[i], atol=0.1)
@@ -150,7 +159,7 @@ def compute_hpica(Ybar, n_components=10, n_iter=10, n_gaussians=3,
 
         for v in range(n_samples):
 
-            # YY is a column vector with subject-specific data concatenated
+            # YY is a column vector with subjects' data concatenated
             YY = np.concatenate([Y[i][:, v] for i in range(n_subjects)])[:, np.newaxis]
 
             E_s_Y_z_v = []
@@ -170,11 +179,8 @@ def compute_hpica(Ybar, n_components=10, n_iter=10, n_gaussians=3,
                 # Here we introduce p(gamma|z,Y) which has
                 # error terms of a collapsed model
                 Sigma_gamma = block_diag(KD, Sigma_z)
-                Sigma_gamma_z_Y = pinv(X.T @ pinv(KE) @ X + 
-                                       pinv(Sigma_gamma))
-                Eeta_gamma_z_Y = (Sigma_gamma_z_Y @ X.T @ 
-                                  pinv(KE) @ 
-                                  (YY - AAB @ mu_z))
+                Sigma_gamma_z_Y = pinv(X.T @ pinv(KE) @ X + pinv(Sigma_gamma))
+                Eeta_gamma_z_Y = Sigma_gamma_z_Y @ X.T @ pinv(KE) @ (YY - AAB @ mu_z)
 
                 # Using that, compute p(s|Y,z), where
                 # s has subject-specific sources and
@@ -189,6 +195,7 @@ def compute_hpica(Ybar, n_components=10, n_iter=10, n_gaussians=3,
                 g_mu = AAB @ mu_z
                 g_sigma = (AAB @ Sigma_z @ AAB.T + R) 
                 numer = pi_z.prod() * _mvn_pdf(YY[:, 0], g_mu[:, 0], g_sigma)
+                # numer = pi_z.prod() * _mvn_pdf_scipy(YY[:, 0], g_mu[:, 0], g_sigma)
 
                 denom_elems = []
                 for z_denom in z_space:
@@ -204,6 +211,7 @@ def compute_hpica(Ybar, n_components=10, n_iter=10, n_gaussians=3,
                     g_mu_denom = AAB @ mu_z_denom
                     g_sigma_denom = AAB @ Sigma_z_denom @ AAB.T + R
                     prob = _mvn_pdf(YY[:, 0], g_mu_denom[:, 0], g_sigma_denom)
+                    # prob = _mvn_pdf_scipy(YY[:, 0], g_mu_denom[:, 0], g_sigma_denom)
                     denom_elems.append(pi_z_denom.prod() * prob)
 
                 p_z_Y_v.append(numer / np.sum(denom_elems))
@@ -236,9 +244,9 @@ def compute_hpica(Ybar, n_components=10, n_iter=10, n_gaussians=3,
                 first.append(Y[i][:, v, np.newaxis] @ E_ksi_i_Y.T)
                 second.append(E_ksi2_i_Y)
             A_new[i] = np.sum(first, axis=0) @ pinv(np.sum(second, axis=0))
-            A_new[i] = _sym_decorrelation(A_new[i])
+            # A_new[i] = _sym_decorrelation(A_new[i])
 
-        E_new = np.eye(E.shape)
+        E_new = np.eye(n_features)
         elems = []
         for i in range(n_subjects):
             for v in range(n_samples):
@@ -273,13 +281,11 @@ def compute_hpica(Ybar, n_components=10, n_iter=10, n_gaussians=3,
                                          p_z_Y[v][z_idx] * Var_s_Y_z[v][z_idx][n_subjects*n_sources+l, n_subjects*n_sources+l])
                         E_ksi_il_s_l_Y.append(p_z_Y[v][z_idx] * E_s_Y_z[v][z_idx][n_subjects*n_sources+l]*E_s_Y_z[v][z_idx][i*n_sources+l] +
                                               p_z_Y[v][z_idx] * Var_s_Y_z[v][z_idx][n_subjects*n_sources+l, i*n_sources+l])
-
                     E_ksi_il_2_Y = np.sum(E_ksi_il_2_Y, axis=0)
                     E_s_l_2_Y = np.sum(E_s_l_2_Y, axis=0)
                     E_ksi_il_s_l_Y = np.sum(E_ksi_il_s_l_Y, axis=0)
-
                     elems.append(E_ksi_il_2_Y - 2*E_ksi_il_s_l_Y + E_s_l_2_Y)
-            D_new[l, l] = np.sum(elems, axis=0) / (n_subjects * n_samples)
+            D_new[l, l] = np.sum(elems) / (n_subjects * n_samples)
 
         pis_new = np.zeros(pis.shape)
         for l in range(n_sources):
