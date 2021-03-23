@@ -338,7 +338,7 @@ def compute_hpica(Ybar,
                 elif mvn_pdf == 'scipy':
                     numer = pi_z.prod() * _mvn_pdf_scipy(YY[:, 0], g_mu[:, 0], g_sigma)
                 else:
-                    raise Excpetion('Unsupported mvn_pdf')
+                    raise Exception('Unsupported mvn_pdf')
 
                 denom_elems = []
                 for z_denom in z_space:
@@ -359,7 +359,7 @@ def compute_hpica(Ybar,
                     elif mvn_pdf == 'scipy':
                         prob = _mvn_pdf_scipy(YY[:, 0], g_mu_denom[:, 0], g_sigma_denom)
                     else:
-                        raise Excpetion('Unsupported mvn_pdf')
+                        raise Exception('Unsupported mvn_pdf')
 
                     denom_elems.append(pi_z_denom.prod() * prob)
 
