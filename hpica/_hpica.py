@@ -17,7 +17,8 @@ def _sym_decorrelation(w_):
 
 
 def _mvn_pdf(x, mu, cov):
-    """ Naive but faster implementation than the scipy one """
+    """ Naive but faster implementation than the scipy one 
+    for density of multivariate normal distribution """
     part1 = 1 / (((2*np.pi)**(len(mu)/2)) * (np.linalg.det(cov)**(1/2)))
     part2 = (-1/2) * ((x-mu).T.dot(inv(cov))).dot((x-mu))
     return part1 * np.exp(part2)
@@ -29,7 +30,7 @@ def _mvn_pdf_scipy(x, mu, cov):
 
 
 def _whiten_deterministic(Ybar, n_sources, random_state):
-    """ Uses deterministic PCA to whiten
+    """ Uses deterministic PCA to whiten the data
     """
     from sklearn.decomposition import PCA
     n_subjects = len(Ybar)
@@ -277,6 +278,7 @@ def compute_hpica(Ybar,
         # of the complete log likelihood as it is not
         # needed in the M-step.
 
+        # Replicated E and D matrices
         KE = np.kron(np.eye(n_subjects), E)
         KD = np.kron(np.eye(n_subjects), D)
 
