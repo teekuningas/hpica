@@ -199,7 +199,7 @@ plot_scores(results, title)
 Y = [data[0].T for data in subjects]
 
 results = compute_hpica(Y, n_components=n_sources, random_state=random_state, 
-                        n_iter=20, n_gaussians=2, initial_guess='ica')
+                        n_iter=20, n_gaussians=3, initial_guess='ica', algorithm='subspace')
 
 ica_mixing = results[0]
 pca_means = results[6]

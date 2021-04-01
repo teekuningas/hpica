@@ -3,6 +3,8 @@ import time
 import numpy as np
 import itertools
 
+from decimal import Decimal
+
 from numpy.linalg import pinv
 from numpy.linalg import inv
 from scipy.linalg import block_diag
@@ -14,19 +16,6 @@ def _sym_decorrelation(w_):
     """ Uses classic method of orthogonalization via matrix square roots
     """
     return np.dot(w_, sqrtm(pinv(np.dot(np.conj(w_.T), w_))))
-
-
-def _mvn_pdf(x, mu, cov):
-    """ Naive but faster implementation than the scipy one 
-    for density of multivariate normal distribution """
-    part1 = 1 / (((2*np.pi)**(len(mu)/2)) * (np.linalg.det(cov)**(1/2)))
-    part2 = (-1/2) * ((x-mu).T.dot(inv(cov))).dot((x-mu))
-    return part1 * np.exp(part2)
-
-
-def _mvn_pdf_scipy(x, mu, cov):
-    """ Scipy implementation """
-    return multivariate_normal.pdf(x, mu, cov)
 
 
 def _whiten_deterministic(Ybar, n_sources, random_state):
@@ -190,7 +179,6 @@ def compute_hpica(Ybar,
                   n_gaussians=3,
                   whiten='deterministic',
                   algorithm='exact',
-                  mvn_pdf='fast',
                   initial_guess='ica',
                   random_state=None, 
                   eps=1e-9, 
@@ -206,7 +194,6 @@ def compute_hpica(Ybar,
     n_gaussians: Number of gaussians in the source distribution model,
     whiten: 'deterministic' or None (prewhitened),
     algorithm: 'exact' or 'subspace',
-    mvn_pdf: 'fast' (naive) or 'scipy' (robust),
     initial_guess: 'random' or 'ica' (with data concatenation) or 'ica_match' (with component matching)
     random_state: None, int or RandomState,
     eps: quit after ||theta_new-theta|| / ||theta|| < eps,
@@ -253,9 +240,6 @@ def compute_hpica(Ybar,
 
     start_time = time.time()
 
-    if algorithm == 'subspace':
-        raise Exception('Not implemented yet')
-
     # Introduce helper matrices to handle joint distributions
     B = np.kron(np.ones(n_subjects)[:, np.newaxis], np.eye(n_sources))
     J = np.block([np.zeros((n_sources, n_sources*n_subjects)), np.eye(n_sources)])
@@ -263,10 +247,21 @@ def compute_hpica(Ybar,
     P = np.block([[Q], [J]])
     KU = np.kron(np.ones(n_subjects+1)[:, np.newaxis], np.eye(n_sources))
 
-    # z space has m^q elements
-    z_space = list(
-        itertools.product(*[range(n_gaussians) for lst in 
-                            range(n_sources)]))
+    if algorithm == 'subspace':
+        # z space has (m-1)*q + 1 elements
+        z_space = [(0, 0, 0, 0)]
+        for j in range(1, n_gaussians):
+            for l in range(n_sources):
+                z = [0, 0, 0, 0]
+                z[l] = j
+                z_space.append(tuple(z))
+    elif algorithm == 'exact':
+        # z space has m^q elements
+        z_space = list(
+            itertools.product(*[range(n_gaussians) for lst in 
+                                range(n_sources)]))
+    else:
+        raise Exception('Not implemented yet')
 
     for iter_idx in range(n_iter):
 
@@ -333,14 +328,11 @@ def compute_hpica(Ybar,
                 g_mu = AAB @ mu_z
                 g_sigma = (AAB @ Sigma_z @ AAB.T + R) 
 
-                if mvn_pdf == 'fast':
-                    numer = pi_z.prod() * _mvn_pdf(YY[:, 0], g_mu[:, 0], g_sigma)
-                elif mvn_pdf == 'scipy':
-                    numer = pi_z.prod() * _mvn_pdf_scipy(YY[:, 0], g_mu[:, 0], g_sigma)
-                else:
-                    raise Exception('Unsupported mvn_pdf')
+                numer_log = multivariate_normal.logpdf(YY[:, 0], g_mu[:, 0], g_sigma)
+                numer_factor = pi_z.prod()
 
-                denom_elems = []
+                denom_logs = []
+                denom_factors = []
                 for z_denom in z_space:
 
                     Sigma_z_denom = np.zeros((n_sources, n_sources))
@@ -354,16 +346,15 @@ def compute_hpica(Ybar,
                     g_mu_denom = AAB @ mu_z_denom
                     g_sigma_denom = AAB @ Sigma_z_denom @ AAB.T + R
 
-                    if mvn_pdf == 'fast':
-                        prob = _mvn_pdf(YY[:, 0], g_mu_denom[:, 0], g_sigma_denom)
-                    elif mvn_pdf == 'scipy':
-                        prob = _mvn_pdf_scipy(YY[:, 0], g_mu_denom[:, 0], g_sigma_denom)
-                    else:
-                        raise Exception('Unsupported mvn_pdf')
+                    denom_logs.append(multivariate_normal.logpdf(YY[:, 0], g_mu_denom[:, 0], g_sigma_denom))
+                    denom_factors.append(pi_z_denom.prod())
 
-                    denom_elems.append(pi_z_denom.prod() * prob)
-
-                p_z_Y_v.append(numer / np.sum(denom_elems))
+                # Compute the numer / denom part with high precision library to not get
+                # overflows
+                prob = (Decimal(numer_factor) * Decimal(numer_log).exp() /
+                        sum([Decimal(denom_factors[ii])*Decimal(denom_logs[ii]).exp() 
+                             for ii in range(len(denom_logs))]))
+                p_z_Y_v.append(float(prob))
 
             E_s_Y_z.append(E_s_Y_z_v)
             Var_s_Y_z.append(Var_s_Y_z_v)
