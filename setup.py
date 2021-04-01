@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name='hpica',
-    version='0.1.0',
+    version='0.2.0',
     description="",
     author='Erkka Heinila',
     author_email='erkka.heinila@jyu.fi',
