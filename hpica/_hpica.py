@@ -249,10 +249,10 @@ def compute_hpica(Ybar,
 
     if algorithm == 'subspace':
         # z space has (m-1)*q + 1 elements
-        z_space = [(0, 0, 0, 0)]
+        z_space = [tuple([0]*n_sources)]
         for j in range(1, n_gaussians):
             for l in range(n_sources):
-                z = [0, 0, 0, 0]
+                z = [0]*n_sources
                 z[l] = j
                 z_space.append(tuple(z))
     elif algorithm == 'exact':
