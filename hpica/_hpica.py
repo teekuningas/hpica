@@ -1,12 +1,16 @@
 import time
+import itertools
 
 import numpy as np
-import itertools
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 from decimal import Decimal
 
+from sklearn.decomposition import FastICA
+from sklearn.decomposition import PCA
+
 from numpy.linalg import pinv
-from numpy.linalg import inv
 from scipy.linalg import block_diag
 from scipy.linalg import sqrtm
 from scipy.stats import multivariate_normal
@@ -19,187 +23,117 @@ def _sym_decorrelation(w_):
 
 
 def _whiten_deterministic(Ybar, n_sources, random_state):
-    """ Uses deterministic PCA to whiten the data
+    """ Uses deterministic PCA to whiten the data.
     """
-    from sklearn.decomposition import PCA
     n_subjects = len(Ybar)
-    wh_means = []
+    wh_mean = []
     wh_matrix = []
 
     Y = []
     for i in range(n_subjects):
         pca = PCA(n_components=n_sources, whiten=True, random_state=random_state)
         Y.append(pca.fit_transform(Ybar[i].T).T)  # (n_sources, n_samples)
-        wh_means.append(pca.mean_)  # (n_features)
+        wh_mean.append(pca.mean_)  # (n_features)
         wh_matrix.append((pca.components_ / pca.singular_values_[:, np.newaxis]) * 
                          np.sqrt(Ybar[i].shape[1]))  # (n_sources, n_features), 
 
         # Check that all is fine
-        np.testing.assert_allclose(wh_matrix[i] @ (Ybar[i] - wh_means[i][:, np.newaxis]), Y[i], atol=0.1)
+        np.testing.assert_allclose(wh_matrix[i] @ (Ybar[i] - wh_mean[i][:, np.newaxis]), Y[i], atol=0.1)
  
-    return Y, wh_means, wh_matrix
+    return Y, wh_mean, wh_matrix
 
 
-def _initial_guess_ica(Y, n_gaussians, random_state):
-    """ Use fastica solution on feature-space 
-    concatenated data as a starting guess
+def _initial_guess_ica(Y, X, n_gaussians, init_values, random_state):
+    """ Use fastica solution on feature-space concatenated data as a 
+    starting guess for A_is. Other values are set to fine defaults.
+    You may provide your own init values through init_values dictionary.
 
     """
-    from sklearn.mixture import GaussianMixture
-    from sklearn.decomposition import FastICA
-
     n_sources = Y[0].shape[0]
-    n_features = Y[0].shape[0]
-    n_subjects = len(Y)
-
-    sources = []
-    mixing = []
-
-    ica = FastICA(whiten=True, n_components=n_sources, random_state=random_state)
-
-    # find sources and mixing and scale correctly
-    sources = ica.fit_transform(np.vstack(Y).T).T
-    sources = sources / np.std(sources)
-    factor = np.std(np.vstack(Y)) / np.std(ica.components_.T @ sources)
-    mixing = ica.components_.T * factor
-    mixing = np.array(np.split(mixing, n_subjects))
-
-    # Generate mixing matrices based on the FastICA results
-    A = np.array(mixing)
-
-    # Generate mus, pis and vars by fitting GaussianMixture with sklearn
-    mus = np.zeros((n_sources, n_gaussians))
-    pis = np.zeros((n_sources, n_gaussians))
-    vars_ = np.zeros((n_sources, n_gaussians))
-
-    gm = GaussianMixture(n_components=n_gaussians, random_state=random_state)
-    for s_idx, s in enumerate(sources):
-        gm.fit(s[:, np.newaxis])
-        mus[s_idx, :] = gm.means_[:, 0]
-        vars_[s_idx, :] = gm.covariances_[:, 0, 0]
-        pis[s_idx, :] = gm.weights_
-
-    # generate cov for subject-specific deviations from population
-    D = np.eye(n_sources) * 0.01
-
-    # generate cov for subject-specific noise
-    E = np.eye(n_sources) * 0.01
-
-    return mus, vars_, pis, E, D, A
-
-
-def _initial_guess_ica_match(Y, n_gaussians, random_state):
-    """ Use fastica solutions combined with post-hoc 
-    component matching as a starting guess
-    """
-    from sklearn.mixture import GaussianMixture
-    from sklearn.decomposition import FastICA
-
-    n_sources = Y[0].shape[0]
-    n_features = Y[0].shape[0]
-    n_subjects = len(Y)
-
-    sources = []
-    mixing = []
-
-    first_ica = FastICA(whiten=False, random_state=random_state)
-    sources.append(first_ica.fit_transform(Y[0].T).T)
-    mixing.append(first_ica.components_.T)
-
-    # Sort (with cov as a metric) sources and mixings of other 
-    # subjects so that they match the first subject (uses cov as a metric).
-    for i in range(n_subjects-1):
-        ica = FastICA(whiten=False, random_state=random_state)
-
-        srcs = ica.fit_transform(Y[i+1].T).T
-        mxng = ica.components_.T  # (n_features x n_sources)
-        sorted_srcs = []
-        sorted_mixing = []
-        for l in range(n_sources):
-            cov = sources[0][l] @ srcs.T
-            idx = np.argmax(np.abs(cov))
-            sgn = np.sign(cov[idx])
-            sorted_srcs.append(sgn*srcs[idx])
-            sorted_mixing.append(sgn*mxng[:, idx])
-
-        sources.append(np.array(sorted_srcs))
-        mixing.append(np.array(sorted_mixing).T)
-
-    # Generate mixing matrices based on the FastICA results
-    A = np.array(mixing)
-
-    # Generate mus, pis and vars by fitting GaussianMixture with sklearn
-    mus = np.zeros((n_sources, n_gaussians))
-    pis = np.zeros((n_sources, n_gaussians))
-    vars_ = np.zeros((n_sources, n_gaussians))
-
-    gm = GaussianMixture(n_components=n_gaussians, random_state=random_state)
-    for s_idx, s in enumerate(sources[0]):
-        gm.fit(s[:, np.newaxis])
-        mus[s_idx, :] = gm.means_[:, 0]
-        vars_[s_idx, :] = gm.covariances_[:, 0, 0]
-        pis[s_idx, :] = gm.weights_
-
-    # generate cov for subject-specific deviations from population
-    D = np.eye(n_sources) * 0.01
-
-    # generate cov for subject-specific noise
-    E = np.eye(n_sources) * 0.01
-
-    return mus, vars_, pis, E, D, A
-
-def _initial_guess_random(Y, n_sources, n_gaussians, random_state):
-    """ Makes a random guess. Usually works poorly and 
-    converges slowly to a nonglobal optimum.
-    """
-    n_subjects = len(Y)
     n_samples = Y[0].shape[1]
-    n_features = Y[0].shape[0]
+    n_subjects = len(Y)
+    n_covariates = X.shape[1]
 
-    # Generate params for gaussian mixtures
-    mus = random_state.normal(size=(n_sources, n_gaussians))
-    vars_ = 0.1 + np.abs(random_state.normal(size=(n_sources, n_gaussians)))
-    pis = np.abs(random_state.normal(size=(n_sources, n_gaussians)))
-    pis = pis / np.sum(pis, axis=1)[:, np.newaxis]
+    if init_values.get('A') is None:
 
-    # Generate cov for subject-specific deviations from population
-    D = np.diag(np.abs(random_state.normal(size=n_sources)))
+        ica = FastICA(whiten=True, n_components=n_sources, random_state=random_state)
+
+        # find sources and mixing and scale correctly
+        sources = ica.fit_transform(np.vstack(Y).T).T
+        sources = sources / np.std(sources)
+        factor = np.std(np.vstack(Y)) / np.std(ica.components_.T @ sources)
+        mixing = ica.components_.T * factor
+        mixing = np.array(np.split(mixing, n_subjects))
+
+        # Generate mixing matrices based on the FastICA results
+        A = np.array(mixing)
+    else:
+        A = init_values.get('A')
+
+    if init_values.get('mus') is None:
+        if n_gaussians == 2:
+            mus = np.tile([0,1], (n_sources, 1))
+        elif n_gaussians == 3:
+            mus = np.tile([0,1,-1], (n_sources, 1))
+        else:
+            raise Exception('Automatic initialization of mus supports only 2 or 3 gaussians')
+    else:
+        mus = init_values.get('mus')
+
+    if init_values.get('pis') is None:
+        if n_gaussians == 2:
+            pis = np.tile([0.9, 0.1], (n_sources, 1))
+        elif n_gaussians == 3:
+            pis = np.tile([0.9, 0.05, 0.05], (n_sources, 1))
+        else:
+            raise Exception('Automatic initialization of pis supports only 2 or 3 gaussians')
+    else:
+        pis = init_values.get('pis')
+
+    if init_values.get('vars') is None:
+        if n_gaussians == 2:
+            vars_ = np.tile([1.0, 1.0], (n_sources, 1))
+        elif n_gaussians == 3:
+            vars_ = np.tile([1.0, 1.0, 1.0], (n_sources, 1))
+        else:
+            raise Exception('Automatic initialization of vars supports only 2 or 3 gaussians')
+    else:
+        vars_ = init_values.get('vars')
+
+    # generate cov for subject-specific deviations from population
+    if init_values.get('D') is None:
+        D = np.eye(n_sources) * 0.01
+    else:
+        D = init_values.get('D')
 
     # generate cov for subject-specific noise
-    E = np.abs(random_state.normal())*np.eye(n_features)
+    if init_values.get('E') is None:
+        E = np.eye(n_sources) * 0.01
+    else:
+        E = init_values.get('E')
 
-    # generate mixing matrix
-    A = random_state.normal(size=(n_subjects, n_features, n_sources))
-        
-    return mus, vars_, pis, E, D, A
+    # generate cov for subject-specific noise
+    if init_values.get('Beta') is None:
+        Beta = random_state.normal(size=(n_samples, n_covariates, n_sources)) * 0.01
+    else:
+        Beta = init_values.get('Beta')
+
+    return mus, vars_, pis, E, D, A, Beta
 
 
-def compute_hpica(Ybar, 
-                  n_components=10, 
-                  n_gaussians=3,
-                  whiten='deterministic',
-                  algorithm='exact',
-                  initial_guess='ica',
-                  random_state=None, 
-                  eps=1e-9, 
-                  n_iter=10, 
-                  verbose=True):
-    """
-    Compute hierarhical probabilistic ICA from Guo et al. 2013
-
-    Params:
-    
-    Ybar: a list of datasets of shape (n_features, n_samples),
-    n_components: number of estimated components,
-    n_gaussians: Number of gaussians in the source distribution model,
-    whiten: 'deterministic' or None (prewhitened),
-    algorithm: 'exact' or 'subspace',
-    initial_guess: 'random' or 'ica' (with data concatenation) or 'ica_match' (with component matching)
-    random_state: None, int or RandomState,
-    eps: quit after ||theta_new-theta|| / ||theta|| < eps,
-    n_iter: quit after n_iter,
-    verbose: show prints,
-
+def _compute_hpica(Ybar, 
+                   X,
+                   n_components=10, 
+                   n_gaussians=3,
+                   whiten='deterministic',
+                   algorithm='exact',
+                   init_values={},
+                   random_state=None, 
+                   eps=1e-9, 
+                   n_iter=10, 
+                   store_intermediate_results=True,
+                   verbose=True):
+    """ Implements data preparation and the EM algorithm.
     """
     n_sources = n_components
     n_subjects = len(Ybar)
@@ -218,7 +152,7 @@ def compute_hpica(Ybar,
     # Demean and whiten the input variables
     # Note that whitening matrix unmixes and A mixes..
     if whiten == 'deterministic':
-        Y, wh_means, wh_matrix = _whiten_deterministic(Ybar, n_sources=n_sources, random_state=random_state)
+        Y, wh_mean, wh_matrix = _whiten_deterministic(Ybar, n_sources=n_sources, random_state=random_state)
         n_features = Y[0].shape[0]
     else:
         if Ybar[0].shape[0] != n_sources:
@@ -226,17 +160,19 @@ def compute_hpica(Ybar,
         Y = Ybar
 
     # Get a initial guess
-    if initial_guess == 'random':
-        mus, vars_, pis, E, D, A = _initial_guess_random(
-            Y, n_sources, n_gaussians, random_state)
-    elif initial_guess == 'ica':
-        mus, vars_, pis, E, D, A = _initial_guess_ica(
-            Y, n_gaussians, random_state)
-    elif initial_guess == 'ica_match':
-        mus, vars_, pis, E, D, A = _initial_guess_ica_match(
-            Y, n_gaussians, random_state)
-    else:
-        raise Exception('Unsupported initial_guess')
+    mus, vars_, pis, E, D, A, Beta = _initial_guess_ica(
+        Y, X, n_gaussians, init_values, random_state)
+
+    intermediate_results = {
+        'A': [],
+        'E': [],
+        'D': [],
+        'Beta': [],
+        'pis': [],
+        'mus': [],
+        'vars': [],
+        'E_s_Y': [],
+    }
 
     start_time = time.time()
 
@@ -248,7 +184,9 @@ def compute_hpica(Ybar,
     KU = np.kron(np.ones(n_subjects+1)[:, np.newaxis], np.eye(n_sources))
 
     if algorithm == 'subspace':
-        # z space has (m-1)*q + 1 elements
+        # Subspace algorithm works similarly to the exact algorithm
+        # but limits the search to a reasonable subspace.
+        # This subspace has (n_gaussians-1)*n_sources + 1 elements.
         z_space = [tuple([0]*n_sources)]
         for j in range(1, n_gaussians):
             for l in range(n_sources):
@@ -256,7 +194,9 @@ def compute_hpica(Ybar,
                 z[l] = j
                 z_space.append(tuple(z))
     elif algorithm == 'exact':
-        # z space has m^q elements
+        # The exact algorithm searches through the whole z space,
+        # which can quickly become large.
+        # The z space has n_gaussians^n_sources elements.
         z_space = list(
             itertools.product(*[range(n_gaussians) for lst in 
                                 range(n_sources)]))
@@ -364,8 +304,21 @@ def compute_hpica(Ybar,
             print("Elapsed in E: " + str(time.time() - start_time))
         start_time = time.time()
 
+        # Compute E_s_Y to be stored
+        E_s_Y = []
+        for i in range(n_subjects):
+            E_ksi_i_Y_i = []
+            for v in range(n_samples):
+                E_ksi_i_Y_i_v = []
+                for z_idx in range(len(z_space)):
+                    E_ksi_i_Y_i_v.append(p_z_Y[v][z_idx] * E_s_Y_z[v][z_idx][i*n_sources:(i+1)*n_sources])
+                E_ksi_i_Y_i.append(np.sum(E_ksi_i_Y_i_v, axis=0))
+            E_s_Y.append(E_ksi_i_Y_i)
+        E_s_Y = np.array(E_s_Y)[:, :, :, 0]
+
         # Update parameters (M-step).
-        # All of these are kindly derived in the Guo et al. 2013.
+        # All of these are kindly derived both in the Guo et al. 2013
+        # and Shi et al. 2016.
         A_new = np.zeros(A.shape)
         for i in range(n_subjects):
             first = []
@@ -387,6 +340,8 @@ def compute_hpica(Ybar,
             # Y = As <=> (Y @ s.T) @ inv((s @ s.T)) = A
             A_new[i] = np.sum(first, axis=0) @ pinv(np.sum(second, axis=0))
             A_new[i] = _sym_decorrelation(A_new[i])
+
+        Beta_new = np.ones(Beta.shape)
 
         E_new = np.eye(n_features)
         elems = []
@@ -528,12 +483,179 @@ def compute_hpica(Ybar,
         A = A_new
         E = E_new
         D = D_new
+        Beta = Beta_new
         pis = pis_new
         mus = mus_new
         vars_ = vars_new
 
+        if store_intermediate_results:
+            intermediate_results['A'].append(A)
+            intermediate_results['E'].append(E)
+            intermediate_results['D'].append(D)
+            intermediate_results['Beta'].append(Beta)
+            intermediate_results['pis'].append(pis)
+            intermediate_results['mus'].append(mus)
+            intermediate_results['vars'].append(vars_)
+            intermediate_results['E_s_Y'].append(E_s_Y)
+
         if distance < eps:
             break
 
-    return A_new, E_new, D_new, pis_new, mus_new, vars_new, wh_means, wh_matrix
+    return (A_new, E_new, D_new, pis_new, mus_new, vars_new, 
+            wh_mean, wh_matrix, intermediate_results)
 
+
+class HPICA:
+    """
+    Compute hierarchical probabilistic ICA from Shi et al. 2016
+
+    Parameters
+    ----------
+    n_components : int
+        Number of estimated components.
+    n_gaussians : int
+        Number of gaussians in the source distribution model.
+    whiten : str or None
+        If 'deterministic', uses PCA to whiten the data before
+        fitting ICA. If None, the data is assumed to be
+        prewhitened.
+    algorithm : str
+        Can either be 'exact' or 'subspace'.
+    init_values : dict
+        Values for initialization can be passed here, can be e.g
+        {'mus': np.tile([-1, 1], (n_sources, 1))}.
+    random_state: None, int or RandomState,
+        Seed for reproducibility.
+    eps : float
+        Quit after ||theta_new-theta|| / ||theta|| < eps.
+    n_iter : int
+        Quit after n_iter.
+    store_intermediate_results : bool
+        Whether to store parameter estimates
+        from every iteration.
+    verbose: bool
+        Whether to print verbosely.
+    """
+
+    def __init__(self, 
+                 n_components=10, 
+                 n_gaussians=3,
+                 whiten='deterministic',
+                 algorithm='exact',
+                 init_values={},
+                 random_state=None, 
+                 eps=1e-9, 
+                 n_iter=10,
+                 store_intermediate_results=True,
+                 verbose=True):
+ 
+        self._n_components = n_components
+        self._n_gaussians = n_gaussians
+        self._whiten = whiten
+        self._algorithm = algorithm
+        self._init_values = init_values
+        self._random_state = random_state
+        self._eps = eps
+        self._n_iter = n_iter
+        self._store_intermediate_results = store_intermediate_results
+        self._verbose = verbose
+        
+        self._is_fit = False
+
+    def fit(self, Ybar, X):
+        """ Uses EM to estimate the model.
+
+        Parameters
+        ----------
+        Ybar : list
+            List of datasets. Each element should be np.array of shape (n_features, n_samples),
+            that is, if this is spatial ICA, the second dimension should be the spatial one.
+        X : np.array or None
+            An array containing the covariate data. If not None, should
+            be of shape (n_subjects, n_covariates).
+        """
+        results = _compute_hpica(
+            Ybar, 
+            X, 
+            n_components=self._n_components, 
+            n_gaussians=self._n_gaussians,
+            whiten=self._whiten,
+            algorithm=self._algorithm,
+            init_values=self._init_values,
+            random_state=self._random_state, 
+            eps=self._eps, 
+            n_iter=self._n_iter, 
+            store_intermediate_results=self._store_intermediate_results,
+            verbose=self._verbose)
+
+        self._A = results[0]
+        self._E = results[1]
+        self._D = results[2]
+        self._pis = results[3]
+        self._mus = results[4]
+        self._vars = results[5]
+        self._wh_mean = results[6]
+        self._wh_matrix = results[7]
+        self._intermediate_results = results[8]
+
+        self._is_fit = True
+
+    def infer(self):
+        """
+        """
+
+    def plot_evolution(self):
+        """ Plots how source distribution model evolves on
+        each iteration.
+        """
+        if not self._is_fit:
+            raise Exception('Must fit first.')
+        if not self._store_intermediate_results:
+            raise Excpetion('Must store intermediate results.')
+
+        res = self._intermediate_results
+
+        n_rows_on_page = 8
+        n_rows_total = len(res['pis'])
+        n_cols = res['pis'][0].shape[0]
+        n_figs = self._n_iter // n_rows_on_page + 1
+        for fig_idx in range(n_figs):
+            start_idx = fig_idx * n_rows_on_page
+            end_idx = min(((fig_idx + 1) * n_rows_on_page), n_rows_total)
+            n_rows = end_idx - start_idx
+
+            fig, axes = plt.subplots(n_rows, n_cols,
+                                     squeeze=False, constrained_layout=True)
+            fig.suptitle('Iterations {0} - {1}'.format(
+                fig_idx*n_rows_on_page+1,
+                (fig_idx+1)*n_rows_on_page+1))
+
+            for row_idx in range(n_rows):
+                for col_idx in range(n_cols):
+                    ax = axes[row_idx, col_idx]
+
+                    mus = res['mus'][start_idx + row_idx]
+                    pis = res['pis'][start_idx + row_idx]
+                    vars_ = res['vars'][start_idx + row_idx]
+
+                    # Create the hist plots by sampling from the source distrubution model.
+                    samples = []
+                    n_samples = 1000
+                    for sample_idx in range(n_samples):
+                        gaussian_idx = self._random_state.choice(range(pis.shape[1]), p=pis[col_idx])
+                        samples.append(self._random_state.normal(mus[col_idx][gaussian_idx], 
+                                                                 vars_[col_idx][gaussian_idx]))
+
+                    sns.histplot(samples, ax=ax)
+
+    @property
+    def mixing(self):
+        return self._A
+        
+    @property
+    def wh_mean(self):
+        return self._wh_mean
+
+    @property
+    def wh_matrix(self):
+        return self._wh_matrix

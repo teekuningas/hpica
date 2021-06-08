@@ -1,1 +1,1 @@
-from ._hpica import compute_hpica
+from ._hpica import HPICA
