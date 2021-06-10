@@ -62,8 +62,8 @@ for idx in range(n_subjects):
     # Set up group differences for subjects 1-5 and 6-10
     # in component 1.
     subject_s1 = s1.copy() 
-    subject_s1[0:int(len(subject_s1)/2)] += 0.5*groups[idx] - 0.5*(1 - groups[idx])
-    subject_s1[int(len(subject_s1)/2):] += -0.5*groups[idx] + 0.5*(1 - groups[idx])
+    subject_s1[0:int(len(subject_s1)/2)] += 0.25*groups[idx] - 0.25*(1 - groups[idx]) + random_state.normal(0, 0.5)
+    subject_s1[int(len(subject_s1)/2):] += -0.25*groups[idx] + 0.25*(1 - groups[idx]) + random_state.normal(0, 0.5)
 
     subject_s2 = s2.copy()
     subject_s3 = s3.copy()
@@ -107,7 +107,7 @@ for subject_idx, subject in enumerate(subjects):
 
         ax.plot(time, subject[2][:, source_idx])
 
-        ax.set_ylim(-1.5, 1.5)
+        ax.set_ylim(-2.0, 2.0)
         title = ('Subject ' + str(subject_idx+1) +
                  ', source ' + str(source_idx+1))
         ax.set_title(title, fontsize=7)
@@ -220,11 +220,11 @@ plot_scores(results, 'Scores for SC-TICA')
 # Set up data as list of (n_features, n_samples) np.arrays
 Y = [data[0].T for data in subjects]
 
-# Set up two covariates, "noisy" group information and
-# a random vector.
+# Set up two covariates, other containing the group information,
+# and the other being just a random zero-mean vector.
 X = np.zeros((n_subjects, 2))
-X[1:9, 0] = groups[1:9]
-X[0], X[9] = groups[9], groups[0]
+
+X[:, 0] = groups
 X[:, 1] = random_state.normal(0, 1, size=10)
 
 print("Fitting hierarchical TICA")
@@ -245,7 +245,7 @@ init_values = {
 
 ica = HPICA(n_components=n_sources,
             random_state=random_state,
-            n_iter=12,
+            n_iter=20,
             n_gaussians=n_gaussians,
             init_values=init_values,
             algorithm='exact')
