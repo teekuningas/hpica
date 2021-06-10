@@ -17,13 +17,13 @@ from scipy.stats import multivariate_normal
 
 
 def _sym_decorrelation(w_):
-    """ Uses classic method of orthogonalization via matrix square roots
+    """ Classic method of orthogonalization via matrix square roots
     """
     return np.dot(w_, sqrtm(pinv(np.dot(np.conj(w_.T), w_))))
 
 
 def _whiten_deterministic(Ybar, n_sources, random_state):
-    """ Uses deterministic PCA to whiten the data.
+    """ Uses deterministic PCA to whiten data.
     """
     n_subjects = len(Ybar)
     wh_mean = []
@@ -177,11 +177,15 @@ def _compute_hpica(Ybar,
     start_time = time.time()
 
     # Introduce helper matrices to handle joint distributions
-    B = np.kron(np.ones(n_subjects)[:, np.newaxis], np.eye(n_sources))
-    J = np.block([np.zeros((n_sources, n_sources*n_subjects)), np.eye(n_sources)])
-    Q = np.block([np.eye(n_subjects*n_sources), B])
-    P = np.block([[Q], [J]])
-    KU = np.kron(np.ones(n_subjects+1)[:, np.newaxis], np.eye(n_sources))
+
+    U = np.kron(np.ones(n_subjects)[:, np.newaxis], np.eye(n_sources)) 
+    R = np.block([np.eye(n_subjects*n_sources), U])
+
+    P_upper = np.block([np.eye(n_subjects*n_sources), U])
+    P_lower = np.block([np.zeros((n_sources, n_sources*n_subjects)), np.eye(n_sources)])
+    P = np.block([[P_upper], [P_lower]])
+
+    XX = np.concatenate(X)[:, np.newaxis]
 
     if algorithm == 'subspace':
         # Subspace algorithm works similarly to the exact algorithm
@@ -201,7 +205,7 @@ def _compute_hpica(Ybar,
             itertools.product(*[range(n_gaussians) for lst in 
                                 range(n_sources)]))
     else:
-        raise Exception('Not implemented yet')
+        raise Exception("Algorithm must be either 'subspace' or 'exact'.")
 
     for iter_idx in range(n_iter):
 
@@ -213,15 +217,10 @@ def _compute_hpica(Ybar,
         # of the complete log likelihood as it is not
         # needed in the M-step.
 
-        # Replicated E and D matrices
         KE = np.kron(np.eye(n_subjects), E)
         KD = np.kron(np.eye(n_subjects), D)
 
-        # A-dependent helper matrices
         AA = block_diag(*A)
-        AAB = AA @ B
-        R = AA @ KD @ AA.T + KE
-        X = np.block([AA, AAB])
 
         # Compute full joint distribution of p(s|Y,z) to facilitiate use of
         # p(s|Y,z)-based expectations in the M-step. p(z|Y) is need in the M-step too.
@@ -232,8 +231,9 @@ def _compute_hpica(Ybar,
 
         for v in range(n_samples):
 
-            # YY is a column vector with subjects' data concatenated
             YY = np.concatenate([Y[i][:, v] for i in range(n_subjects)])[:, np.newaxis]
+
+            B = np.kron(np.eye(n_subjects), Beta[v].T)
 
             E_s_Y_z_v = []
             Var_s_Y_z_v = []
@@ -249,24 +249,35 @@ def _compute_hpica(Ybar,
                     pi_z[l] = pis[l, z[l]]
                     mu_z[l] = mus[l, z[l]]
 
-                # Here we introduce p(gamma|z,Y) which has
-                # error terms of a collapsed model
-                Sigma_gamma = block_diag(KD, Sigma_z)
-                Sigma_gamma_z_Y = pinv(X.T @ pinv(KE) @ X + pinv(Sigma_gamma))
-                Eeta_gamma_z_Y = Sigma_gamma_z_Y @ X.T @ pinv(KE) @ (YY - AAB @ mu_z)
+                Q_z = np.block([[B @ XX + U @ mu_z], [mu_z]])
 
-                # Using that, compute p(s|Y,z), where
+                Gamma_z = block_diag(KD, Sigma_z)
+
+                # I think the supplementary materials of Shi et al 2016 
+                # have mixed up something here.
+                # Thus instead of AA.T @ Y we are going to use just
+                # YY and instead of B, U, R, we are going to
+                # use these:
+                AB = AA @ B
+                AU = AA @ U
+                AR = AA @ R
+
+                Sigma_r_Y = pinv(AR.T @ pinv(KE) @ AR + pinv(Gamma_z))
+                mu_r_Y = Sigma_r_Y @ AR.T @ pinv(KE) @ (YY - AB @ XX - AU @ mu_z)
+
+                # Using this distribution, compute p(s|Y,z), where
                 # s has subject-specific sources and
                 # the population sources concatenated,
                 # ((n_subjects*n_sources + n_sources) x 1)
-                E_s_Y_z_v.append(P @ Eeta_gamma_z_Y + KU @ mu_z)
-                Var_s_Y_z_v.append(P @ Sigma_gamma_z_Y @ P.T)
+                
+                E_s_Y_z_v.append(P @ mu_r_Y + Q_z)
+                Var_s_Y_z_v.append(P @ Sigma_r_Y @ P.T)
 
                 # Then compute p(z|Y), which can be used 
                 # to integrate z out of the expectations.
 
-                g_mu = AAB @ mu_z
-                g_sigma = (AAB @ Sigma_z @ AAB.T + R) 
+                g_mu = AB @ XX + AU @ mu_z
+                g_sigma = AR @ Gamma_z @ AR.T + KE
 
                 numer_log = multivariate_normal.logpdf(YY[:, 0], g_mu[:, 0], g_sigma)
                 numer_factor = pi_z.prod()
@@ -283,8 +294,10 @@ def _compute_hpica(Ybar,
                         pi_z_denom[l] = pis[l, z_denom[l]]
                         mu_z_denom[l] = mus[l, z_denom[l]]
 
-                    g_mu_denom = AAB @ mu_z_denom
-                    g_sigma_denom = AAB @ Sigma_z_denom @ AAB.T + R
+                    Gamma_z_denom = block_diag(KD, Sigma_z_denom)
+
+                    g_mu_denom = AB @ XX + AU @ mu_z_denom
+                    g_sigma_denom = AR @ Gamma_z_denom @ AR.T + KE
 
                     denom_logs.append(multivariate_normal.logpdf(YY[:, 0], g_mu_denom[:, 0], g_sigma_denom))
                     denom_factors.append(pi_z_denom.prod())
@@ -304,63 +317,93 @@ def _compute_hpica(Ybar,
             print("Elapsed in E: " + str(time.time() - start_time))
         start_time = time.time()
 
-        # Compute E_s_Y to be stored
+        # Compute E_s_Y so that it can be used e.g for inference.
         E_s_Y = []
         for i in range(n_subjects):
-            E_ksi_i_Y_i = []
+            E_s_i_Y_i = []
             for v in range(n_samples):
-                E_ksi_i_Y_i_v = []
+                E_s_i_Y_i_v = []
                 for z_idx in range(len(z_space)):
-                    E_ksi_i_Y_i_v.append(p_z_Y[v][z_idx] * E_s_Y_z[v][z_idx][i*n_sources:(i+1)*n_sources])
-                E_ksi_i_Y_i.append(np.sum(E_ksi_i_Y_i_v, axis=0))
-            E_s_Y.append(E_ksi_i_Y_i)
+                    E_s_i_Y_i_v.append(p_z_Y[v][z_idx] * E_s_Y_z[v][z_idx][i*n_sources:(i+1)*n_sources])
+                E_s_i_Y_i.append(np.sum(E_s_i_Y_i_v, axis=0))
+            E_s_Y.append(E_s_i_Y_i)
+
+        E_s_0_Y = []
+        for v in range(n_samples):
+            E_s_0_Y_v = []
+            for z_idx in range(len(z_space)):
+                E_s_0_Y_v.append(p_z_Y[v][z_idx] * E_s_Y_z[v][z_idx][n_subjects*n_sources:])
+            E_s_0_Y.append(np.sum(E_s_0_Y_v, axis=0))
+        E_s_Y.append(E_s_0_Y)
+
         E_s_Y = np.array(E_s_Y)[:, :, :, 0]
 
         # Update parameters (M-step).
         # All of these are kindly derived both in the Guo et al. 2013
         # and Shi et al. 2016.
+        Beta_new = np.zeros(Beta.shape)
+        for v in range(n_samples):
+            first_elems = []
+            second_elems = []
+            for i in range(n_subjects):
+                first_elems.append(X[i][:, np.newaxis] @ X[i][np.newaxis, :])
+
+                E_s_i_Y = []
+                E_s_0_Y = []
+                for z_idx in range(len(z_space)):
+                    E_s_i_Y.append(p_z_Y[v][z_idx] * 
+                                   E_s_Y_z[v][z_idx][i*n_sources:(i+1)*n_sources])
+                    E_s_0_Y.append(p_z_Y[v][z_idx] * 
+                                   E_s_Y_z[v][z_idx][n_subjects*n_sources:])
+                E_s_i_Y = np.sum(E_s_i_Y, axis=0)
+                E_s_0_Y = np.sum(E_s_0_Y, axis=0)
+
+                second_elems.append(X[i][:, np.newaxis] @ (E_s_i_Y.T - E_s_0_Y.T))
+
+            Beta_new[v] = pinv(np.sum(first_elems, axis=0)) @ np.sum(second_elems, axis=0)
+
+
         A_new = np.zeros(A.shape)
         for i in range(n_subjects):
             first = []
             second = []
             for v in range(n_samples):
-                E_ksi_i_Y = []
-                E_ksi2_i_Y = []
+                E_s_i_Y = []
+                E_s2_i_Y = []
                 for z_idx in range(len(z_space)):
-                    E_ksi_i_Y.append(p_z_Y[v][z_idx] * E_s_Y_z[v][z_idx][i*n_sources:(i+1)*n_sources])
-                    E_ksi2_i_Y.append(
+                    E_s_i_Y.append(p_z_Y[v][z_idx] * E_s_Y_z[v][z_idx][i*n_sources:(i+1)*n_sources])
+                    E_s2_i_Y.append(
                         p_z_Y[v][z_idx] * E_s_Y_z[v][z_idx][i*n_sources:(i+1)*n_sources] * E_s_Y_z[v][z_idx][i*n_sources:(i+1)*n_sources].T +
                         p_z_Y[v][z_idx] * Var_s_Y_z[v][z_idx][i*n_sources:(i+1)*n_sources, i*n_sources:(i+1)*n_sources] 
                     )
-                E_ksi_i_Y = np.sum(E_ksi_i_Y, axis=0)
-                E_ksi2_i_Y = np.sum(E_ksi2_i_Y, axis=0)
+                E_s_i_Y = np.sum(E_s_i_Y, axis=0)
+                E_s2_i_Y = np.sum(E_s2_i_Y, axis=0)
 
-                first.append(Y[i][:, v, np.newaxis] @ E_ksi_i_Y.T)
-                second.append(E_ksi2_i_Y)
+                first.append(Y[i][:, v, np.newaxis] @ E_s_i_Y.T)
+                second.append(E_s2_i_Y)
             # Y = As <=> (Y @ s.T) @ inv((s @ s.T)) = A
             A_new[i] = np.sum(first, axis=0) @ pinv(np.sum(second, axis=0))
             A_new[i] = _sym_decorrelation(A_new[i])
 
-        Beta_new = np.ones(Beta.shape)
 
         E_new = np.eye(n_features)
         elems = []
         for i in range(n_subjects):
             for v in range(n_samples):
-                E_ksi_i_Y = []
-                E_ksi2_i_Y = []
+                E_s_i_Y = []
+                E_s2_i_Y = []
                 for z_idx in range(len(z_space)):
-                    E_ksi_i_Y.append(p_z_Y[v][z_idx] * E_s_Y_z[v][z_idx][i*n_sources:(i+1)*n_sources])
-                    E_ksi2_i_Y.append(
+                    E_s_i_Y.append(p_z_Y[v][z_idx] * E_s_Y_z[v][z_idx][i*n_sources:(i+1)*n_sources])
+                    E_s2_i_Y.append(
                         p_z_Y[v][z_idx] * E_s_Y_z[v][z_idx][i*n_sources:(i+1)*n_sources] * E_s_Y_z[v][z_idx][i*n_sources:(i+1)*n_sources].T +
                         p_z_Y[v][z_idx] * Var_s_Y_z[v][z_idx][i*n_sources:(i+1)*n_sources, i*n_sources:(i+1)*n_sources] 
                     )
-                E_ksi_i_Y = np.sum(E_ksi_i_Y, axis=0)
-                E_ksi2_i_Y = np.sum(E_ksi2_i_Y, axis=0)
+                E_s_i_Y = np.sum(E_s_i_Y, axis=0)
+                E_s2_i_Y = np.sum(E_s2_i_Y, axis=0)
                 Y_i_v = Y[i][:, v, np.newaxis]
 
-                elems.append(Y_i_v.T @ Y_i_v - 2 * Y_i_v.T @ A_new[i] @ E_ksi_i_Y + 
-                             np.trace(A_new[i].T @ A_new[i] @ E_ksi2_i_Y))
+                elems.append(Y_i_v.T @ Y_i_v - 2 * Y_i_v.T @ A_new[i] @ E_s_i_Y + 
+                             np.trace(A_new[i].T @ A_new[i] @ E_s2_i_Y))
         E_new = E_new * np.sum(elems) / (n_features * n_subjects * n_samples)
 
         D_new = np.zeros(D.shape)
@@ -368,20 +411,30 @@ def _compute_hpica(Ybar,
             elems = []
             for i in range(n_subjects):
                 for v in range(n_samples):
-                    E_ksi_il_2_Y = []
-                    E_s_l_2_Y = []
-                    E_ksi_il_s_l_Y = []
+                    E_s_il_Y = []
+                    E_s_0l_Y = []
+                    E_s_il_2_Y = []
+                    E_s_0l_2_Y = []
+                    E_s_il_s_0l_Y = []
                     for z_idx in range(len(z_space)):
-                        E_ksi_il_2_Y.append(p_z_Y[v][z_idx] * E_s_Y_z[v][z_idx][i*n_sources+l]**2 + 
-                                            p_z_Y[v][z_idx] * Var_s_Y_z[v][z_idx][i*n_sources+l, i*n_sources+l])
-                        E_s_l_2_Y.append(p_z_Y[v][z_idx] * E_s_Y_z[v][z_idx][n_subjects*n_sources+l]**2 + 
-                                         p_z_Y[v][z_idx] * Var_s_Y_z[v][z_idx][n_subjects*n_sources+l, n_subjects*n_sources+l])
-                        E_ksi_il_s_l_Y.append(p_z_Y[v][z_idx] * E_s_Y_z[v][z_idx][n_subjects*n_sources+l]*E_s_Y_z[v][z_idx][i*n_sources+l] +
-                                              p_z_Y[v][z_idx] * Var_s_Y_z[v][z_idx][n_subjects*n_sources+l, i*n_sources+l])
-                    E_ksi_il_2_Y = np.sum(E_ksi_il_2_Y, axis=0)
-                    E_s_l_2_Y = np.sum(E_s_l_2_Y, axis=0)
-                    E_ksi_il_s_l_Y = np.sum(E_ksi_il_s_l_Y, axis=0)
-                    elems.append(E_ksi_il_2_Y - 2*E_ksi_il_s_l_Y + E_s_l_2_Y)
+                        E_s_il_Y.append(p_z_Y[v][z_idx] * E_s_Y_z[v][z_idx][i*n_sources+l])
+                        E_s_0l_Y.append(p_z_Y[v][z_idx] * E_s_Y_z[v][z_idx][n_subjects*n_sources+l])
+                        E_s_il_2_Y.append(p_z_Y[v][z_idx] * E_s_Y_z[v][z_idx][i*n_sources+l]**2 + 
+                                          p_z_Y[v][z_idx] * Var_s_Y_z[v][z_idx][i*n_sources+l, i*n_sources+l])
+                        E_s_0l_2_Y.append(p_z_Y[v][z_idx] * E_s_Y_z[v][z_idx][n_subjects*n_sources+l]**2 + 
+                                          p_z_Y[v][z_idx] * Var_s_Y_z[v][z_idx][n_subjects*n_sources+l, n_subjects*n_sources+l])
+                        E_s_il_s_0l_Y.append(p_z_Y[v][z_idx] * E_s_Y_z[v][z_idx][n_subjects*n_sources+l]*E_s_Y_z[v][z_idx][i*n_sources+l] +
+                                             p_z_Y[v][z_idx] * Var_s_Y_z[v][z_idx][n_subjects*n_sources+l, i*n_sources+l])
+                    E_s_il_Y = np.sum(E_s_il_Y, axis=0)
+                    E_s_0l_Y = np.sum(E_s_0l_Y, axis=0)
+                    E_s_il_2_Y = np.sum(E_s_il_2_Y, axis=0)
+                    E_s_0l_2_Y = np.sum(E_s_0l_2_Y, axis=0)
+                    E_s_il_s_0l_Y = np.sum(E_s_il_s_0l_Y, axis=0)
+                    first_beta_term = (Beta_new[v][:, l][np.newaxis, :] @ X[i][:, np.newaxis] @ 
+                                       X[i][np.newaxis, :] @ Beta_new[v][:, l][:, np.newaxis])
+                    second_beta_term = 2*(E_s_0l_Y - E_s_il_Y) @ X[i][np.newaxis, :] @ Beta_new[v][:, l][:, np.newaxis]
+                    elems.append(E_s_il_2_Y - 2*E_s_il_s_0l_Y + E_s_0l_2_Y + 
+                                 first_beta_term + second_beta_term)
             D_new[l, l] = np.sum(elems) / (n_subjects * n_samples)
 
         pis_new = np.zeros(pis.shape)
@@ -454,6 +507,8 @@ def _compute_hpica(Ybar,
                                          np.linalg.norm(E.flatten())))
             print("Distance (D): " + str(np.linalg.norm(D_new.flatten() - D.flatten()) / 
                                          np.linalg.norm(D.flatten())))
+            print("Distance (Beta): " + str(np.linalg.norm(Beta_new.flatten() - Beta.flatten()) / 
+                                            np.linalg.norm(Beta.flatten())))
             print("Distance (pis): " + str(np.linalg.norm(pis_new.flatten() - pis.flatten()) / 
                                            np.linalg.norm(pis.flatten())))
             print("Distance (mus): " + str(np.linalg.norm(mus_new.flatten() - mus.flatten()) / 
@@ -464,6 +519,9 @@ def _compute_hpica(Ybar,
             for i in range(n_subjects):
                 print("A" + str(i+1) + ": ")
                 print(str(A_new[i]))
+
+            print("Beta: ")
+            print(str(Beta_new.squeeze()))
 
             print("pis: ") 
             print(str(pis_new))
@@ -501,8 +559,8 @@ def _compute_hpica(Ybar,
         if distance < eps:
             break
 
-    return (A_new, E_new, D_new, pis_new, mus_new, vars_new, 
-            wh_mean, wh_matrix, intermediate_results)
+    return (Beta_new, A_new, E_new, D_new, pis_new, mus_new, vars_new, 
+            wh_mean, wh_matrix, E_s_Y, intermediate_results)
 
 
 class HPICA:
@@ -562,7 +620,7 @@ class HPICA:
         
         self._is_fit = False
 
-    def fit(self, Ybar, X):
+    def fit(self, Ybar, X=None):
         """ Uses EM to estimate the model.
 
         Parameters
@@ -574,6 +632,10 @@ class HPICA:
             An array containing the covariate data. If not None, should
             be of shape (n_subjects, n_covariates).
         """
+        # If no covariates given, use a zero vector.
+        if X is None:
+            X = np.zeros((len(Ybar), 1))
+
         results = _compute_hpica(
             Ybar, 
             X, 
@@ -588,21 +650,64 @@ class HPICA:
             store_intermediate_results=self._store_intermediate_results,
             verbose=self._verbose)
 
-        self._A = results[0]
-        self._E = results[1]
-        self._D = results[2]
-        self._pis = results[3]
-        self._mus = results[4]
-        self._vars = results[5]
-        self._wh_mean = results[6]
-        self._wh_matrix = results[7]
-        self._intermediate_results = results[8]
+        self._Beta = results[0]
+        self._A = results[1]
+        self._E = results[2]
+        self._D = results[3]
+        self._pis = results[4]
+        self._mus = results[5]
+        self._vars = results[6]
+        self._wh_mean = results[7]
+        self._wh_matrix = results[8]
+        self._E_s_Y = results[9]
+        self._intermediate_results = results[10]
 
         self._is_fit = True
 
-    def infer(self):
+    def infer(self, Ybar, X):
+        """ Computes variance estimator for Beta,
+        and uses it to provide hypothesis tests.
         """
-        """
+        if not self._is_fit:
+            raise Exception('Must fit first.')
+
+        if X is None:
+            raise Exception('Cannot infer without proper X.')
+
+        n_subjects = len(Ybar)
+        n_samples = Ybar[0].shape[-1]
+        n_sources = self._n_components
+
+        SE = []
+        for v in range(n_samples):
+            sum_elems = []
+            for i in range(n_subjects):
+                Y_i = self._wh_matrix[i] @ Ybar[i]
+                A_i = self._A[i]
+                X_i = np.kron(X[i][np.newaxis, :], np.eye(n_sources))
+
+                summand = (A_i.T @ Y_i[:, v][:, np.newaxis] -
+                           self._E_s_Y[-1][v][:, np.newaxis] -
+                           (X_i @ np.concatenate(self._Beta[v]))[:, np.newaxis])
+                sum_elems.append(summand @ summand.T)
+            W_v = (1/n_subjects) * np.sum(sum_elems, axis=0)
+
+            sum_elems = []
+            for i in range(n_subjects):
+                Y_i = self._wh_matrix[i] @ (Ybar[i] - self._wh_mean[i][:, np.newaxis])
+                A_i = self._A[i]
+                X_i = np.kron(X[i][np.newaxis, :], np.eye(n_sources))
+
+                sum_elems.append(X_i.T @ pinv(W_v) @ X_i)
+
+            res = (1/n_subjects) * pinv(np.sum(sum_elems, axis=0))
+
+            SE_v = np.array([np.sqrt(res[ix, ix]) for ix in range(len(res))]).reshape(self._Beta[v].shape)
+            SE.append(SE_v)
+        SE = np.array(SE)
+
+        return self._Beta, SE
+
 
     def plot_evolution(self):
         """ Plots how source distribution model evolves on
@@ -628,7 +733,7 @@ class HPICA:
                                      squeeze=False, constrained_layout=True)
             fig.suptitle('Iterations {0} - {1}'.format(
                 fig_idx*n_rows_on_page+1,
-                (fig_idx+1)*n_rows_on_page+1))
+                min((fig_idx+1)*n_rows_on_page, n_rows_total)))
 
             for row_idx in range(n_rows):
                 for col_idx in range(n_cols):
@@ -649,13 +754,29 @@ class HPICA:
                     sns.histplot(samples, ax=ax)
 
     @property
+    def sources(self):
+        if not self._is_fit:
+            raise Exception('Must fit first.')
+
+        return self._E_s_Y[:-1]
+
+    @property
     def mixing(self):
+        if not self._is_fit:
+            raise Exception('Must fit first.')
+
         return self._A
         
     @property
     def wh_mean(self):
+        if not self._is_fit:
+            raise Exception('Must fit first.')
+
         return self._wh_mean
 
     @property
     def wh_matrix(self):
+        if not self._is_fit:
+            raise Exception('Must fit first.')
+
         return self._wh_matrix

@@ -1,5 +1,5 @@
 ##############
-# In this example we will try the hierarchical ICA to a toy example.
+# In this example we will try hierarchical probabilistic ICA to a toy example.
 # For comparison, we use temporal ICA with spatial concatenation as well.
 
 import matplotlib.pyplot as plt
@@ -17,7 +17,8 @@ colors = ['red', 'steelblue', 'green', 'pink']
 
 ##################
 # Generate temporally independent sources and mixings
-n_samples = 200
+
+n_samples = 150
 time = np.linspace(0, 30, n_samples)
 
 # Generate sine waves (they have two-peaked nongaussian distributions)
@@ -33,7 +34,7 @@ S = np.c_[s1, s2, s3]
 S = (S - S.mean(axis=0)) / S.std(axis=0)
 
 # Plot scatters for each source pair to see
-# that sources are nongaussian and  more or less independent
+# that sources are nongaussian and more or less independent
 sns.pairplot(pd.DataFrame(S))
 
 n_sources = S.shape[1]
@@ -58,6 +59,8 @@ for idx in range(n_subjects):
                   padded_template_s2.flatten(),
                   padded_template_s3.flatten()]).T
 
+    # Set up group differences for subjects 1-5 and 6-10
+    # in component 1.
     subject_s1 = s1.copy() 
     subject_s1[0:int(len(subject_s1)/2)] += 0.5*groups[idx] - 0.5*(1 - groups[idx])
     subject_s1[int(len(subject_s1)/2):] += -0.5*groups[idx] + 0.5*(1 - groups[idx])
@@ -66,7 +69,6 @@ for idx in range(n_subjects):
     subject_s3 = s3.copy()
 
     subject_S = np.c_[subject_s1, subject_s2, subject_s3]
-    # subject_S = (subject_S - subject_S.mean(axis=0)) / subject_S.std(axis=0)
 
     # Generate observations from sources and mixing
     X = np.dot(subject_S, A.T)
@@ -115,7 +117,7 @@ for subject_idx, subject in enumerate(subjects):
             tick.label.set_fontsize(7)
 
 ############################
-# Helpers for plotting and computing scores
+# Define helpers for plotting and computing scores
 
 def corrcoef_with_shift(signal1, signal2):
     corrcoefs = []
@@ -187,8 +189,11 @@ ordering = np.argsort([comp[0] for comp in results[0]])
 subjects_ts = [sub[:, ordering] for sub in subjects_ts]
 subjects_maps = [sub[:, ordering] for sub in subjects_maps]
 
+###################
+# Plot extracted spatial maps for each subject.
+
 fig, axes = plt.subplots(n_subjects, n_sources, constrained_layout=True)
-fig.suptitle('SC-TICA')
+fig.suptitle('Spatial maps for SC-TICA')
 for subject_idx in range(n_subjects):
     for source_idx in range(n_sources):
         ax = axes[subject_idx, source_idx]
@@ -203,72 +208,58 @@ for subject_idx in range(n_subjects):
         for tick in ax.yaxis.get_major_ticks():
             tick.label.set_fontsize(7)
 
-fig, axes = plt.subplots(n_subjects, constrained_layout=True)
-fig.suptitle('SC-TICA')
+########
+# Plot the scores.
 
-lim_min = np.min([subjects_ts[idx][:, 0] for idx in range(n_subjects)])
-lim_max = np.max([subjects_ts[idx][:, 0] for idx in range(n_subjects)])
-for subject_idx, source in enumerate(subjects_ts):
-    ax = axes[subject_idx]
-
-    # Plot first component
-    ax.plot(source[:, 0], color=colors[0], lw=0.5)
-
-    ax.set_ylim(lim_min, lim_max)
-    title = 'Subject ' + str(subject_idx+1) + ', first source'
-    ax.set_title(title, fontsize=7)
-    for tick in ax.xaxis.get_major_ticks():
-        tick.label.set_fontsize(7)
-    for tick in ax.yaxis.get_major_ticks():
-        tick.label.set_fontsize(7)
-
-plot_scores(results, 'SC-TICA')
+plot_scores(results, 'Scores for SC-TICA')
 
 ############################################
 # Unmix the data with hierarchical probabilistic temporal ICA.
 # Furthermore, do inference for group difference.
+
+# Set up data as list of (n_features, n_samples) np.arrays
 Y = [data[0].T for data in subjects]
-X = np.array(groups)[:, np.newaxis]
+
+# Set up two covariates, "noisy" group information and
+# a random vector.
+X = np.zeros((n_subjects, 2))
+X[1:9, 0] = groups[1:9]
+X[0], X[9] = groups[9], groups[0]
+X[:, 1] = random_state.normal(0, 1, size=10)
 
 print("Fitting hierarchical TICA")
 
+############################################
 # Fit the hierarchical ICA.
-# Use exact algorithm as the (faster) subspace algorithm cannot recover three coactivated sine waves.
-# In fMRI applications, as in the paper, the subspace algorithm probably works well.
-# 
+# Use exact algorithm as the (faster) subspace algorithm is not well suited 
+# for finding co-activated two-peaked distributions.
+# In fMRI applications, as in the paper, the subspace algorithm should work well.
+
 # Note that the EM algorithm is quite sensitive to initialization. To use only 2 gaussians, 
 # you should help the algorithm with something like this: 
-# init_values = {
-#     'mus': np.tile([-1, 1], (n_sources, 1)),
-#     'pis': np.tile([0.5, 0.5], (n_sources, 1)),
-# }
-# To more robustly model the sine waves, let's set n_gaussians to 3. 
-# The default initialization works fine here.
-init_values = {}
+n_gaussians = 2
+init_values = {
+    'mus': np.tile([-1, 1], (n_sources, 1)),
+    'pis': np.tile([0.5, 0.5], (n_sources, 1)),
+}
+
 ica = HPICA(n_components=n_sources,
             random_state=random_state,
-            n_iter=20,
-            n_gaussians=3,
+            n_iter=12,
+            n_gaussians=n_gaussians,
             init_values=init_values,
             algorithm='exact')
 
 ica.fit(Y, X)
 
-ica.plot_evolution()
+subjects_ts = ica.sources
 
 ica_mixing = ica.mixing
 pca_means = ica.wh_mean
 pca_whitening = ica.wh_matrix
-
-subjects_ts = []
 subjects_maps = []
 for subject_idx in range(n_subjects):
-    demeaned = Y[subject_idx] - pca_means[subject_idx][:, np.newaxis]
     mixing = pca_whitening[subject_idx].T @ ica_mixing[subject_idx]
-    unmixing = mixing.T
-    sources = (unmixing @ demeaned) 
-    
-    subjects_ts.append(sources.T)
     subjects_maps.append(mixing)
 
 results = compute_results(subjects_ts)
@@ -277,8 +268,17 @@ ordering = np.argsort([comp[0] for comp in results[0]])
 subjects_ts = [sub[:, ordering] for sub in subjects_ts]
 subjects_maps = [sub[:, ordering] for sub in subjects_maps]
 
+########
+# Plot how the source distribution model parameters evolve in every
+# iteration.
+
+ica.plot_evolution()
+
+#########
+# Plot the extracted spatial maps.
+
 fig, axes = plt.subplots(n_subjects, n_sources, constrained_layout=True)
-fig.suptitle('Hierarchical TICA')
+fig.suptitle('Spatial maps for hierarchical TICA')
 for subject_idx in range(n_subjects):
     for source_idx in range(n_sources):
         ax = axes[subject_idx, source_idx]
@@ -293,23 +293,61 @@ for subject_idx in range(n_subjects):
         for tick in ax.yaxis.get_major_ticks():
             tick.label.set_fontsize(7)
 
-fig, axes = plt.subplots(n_subjects, constrained_layout=True)
-fig.suptitle('Hierarchical TICA')
+#########
+# Plot extracted time courses for each subject and source. 
 
-lim_min = np.min([subjects_ts[idx][:, 0] for idx in range(n_subjects)])
-lim_max = np.max([subjects_ts[idx][:, 0] for idx in range(n_subjects)])
-for subject_idx, source in enumerate(subjects_ts):
-    ax = axes[subject_idx]
+for source_idx in range(S.shape[1]):
+    fig, axes = plt.subplots(n_subjects, constrained_layout=True)
+    fig.suptitle('Time courses of ' + str(source_idx+1) +'. component for hierarchical TICA')
 
-    # Plot first component
-    ax.plot(source[:, 0], color=colors[0], lw=0.5)
+    lim_min = np.min([subjects_ts[idx][:, 0] for idx in range(n_subjects)])
+    lim_max = np.max([subjects_ts[idx][:, 0] for idx in range(n_subjects)])
+    for subject_idx, source in enumerate(subjects_ts):
+        ax = axes[subject_idx]
 
-    ax.set_ylim(lim_min, lim_max)
-    title = 'Subject ' + str(subject_idx+1) + ', first source'
-    ax.set_title(title, fontsize=7)
-    for tick in ax.xaxis.get_major_ticks():
-        tick.label.set_fontsize(7)
-    for tick in ax.yaxis.get_major_ticks():
-        tick.label.set_fontsize(7)
+        ax.plot(source[:, source_idx], color=colors[0], lw=0.5)
 
-plot_scores(results, 'Hierarchical TICA')
+        ax.set_ylim(lim_min, lim_max)
+        title = 'Subject ' + str(subject_idx+1)
+        ax.set_title(title, fontsize=7)
+        for tick in ax.xaxis.get_major_ticks():
+            tick.label.set_fontsize(7)
+        for tick in ax.yaxis.get_major_ticks():
+            tick.label.set_fontsize(7)
+
+
+########
+# Plot the scores.
+
+plot_scores(results, 'Scores for hierarchical TICA')
+
+########
+# Do inference for the components. The purpose is to test whether
+# the method can find difference between subjects 1-5 and
+# subjects 6-10.
+
+beta, se = ica.infer(Y, X)
+se = se[:, :, ordering]
+beta = beta[:, :, ordering]
+
+for source_idx in range(beta.shape[2]):
+    fig, axes = plt.subplots(beta.shape[1], constrained_layout=True, squeeze=False)
+    fig.suptitle('Inference of ' + str(source_idx+1) + '. source for hierarchical TICA')
+
+    for covariate_idx in range(beta.shape[1]):
+        ax = axes[covariate_idx, 0]
+        ax.set_title('Covariate ' + str(covariate_idx+1))
+
+        y = beta[:, covariate_idx, source_idx]
+        ax.plot(time, y)
+
+        # Draw 99% confidence interval
+        y1 = y + 2.58*se[:, covariate_idx, source_idx]
+        y2 = y - 2.58*se[:, covariate_idx, source_idx]
+        ax.fill_between(time, y1, y2, alpha=0.5, color='pink')
+        ax.axhline(0)
+
+plt.show()
+
+######### 
+# Thank you for following the example. Both methods can extract both the spatial maps and the time courses. However, there is beauty in setting up a full probability model. Everything, such as adjusting for covariates and testing for group differences, follows from there naturally.
