@@ -140,16 +140,6 @@ def _compute_hpica(Ybar,
     n_samples = Ybar[0].shape[1]
     n_features = Ybar[0].shape[0]
 
-    if not random_state:
-        random_state = np.random.RandomState()
-    elif isinstance(random_state, int):
-        random_state = np.random.RandomState(random_state)
-    elif isinstance(random_state, np.random.RandomState):
-        pass
-    else:
-        raise Exception('Unsupported random_state')
-
-    # Demean and whiten the input variables
     # Note that whitening matrix unmixes and A mixes..
     if whiten == 'deterministic':
         Y, wh_mean, wh_matrix = _whiten_deterministic(Ybar, n_sources=n_sources, random_state=random_state)
@@ -606,6 +596,15 @@ class HPICA:
                  n_iter=10,
                  store_intermediate_results=True,
                  verbose=True):
+
+        if not random_state:
+            random_state = np.random.RandomState()
+        elif isinstance(random_state, int):
+            random_state = np.random.RandomState(random_state)
+        elif isinstance(random_state, np.random.RandomState):
+            pass
+        else:
+            raise Exception('Unsupported random_state')
  
         self._n_components = n_components
         self._n_gaussians = n_gaussians
