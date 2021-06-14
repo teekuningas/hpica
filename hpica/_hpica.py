@@ -723,6 +723,7 @@ class HPICA:
         n_rows_total = len(res['pis'])
         n_cols = res['pis'][0].shape[0]
         n_figs = self._n_iter // n_rows_on_page + 1
+        figs = []
         for fig_idx in range(n_figs):
             start_idx = fig_idx * n_rows_on_page
             end_idx = min(((fig_idx + 1) * n_rows_on_page), n_rows_total)
@@ -751,6 +752,8 @@ class HPICA:
                                                                  vars_[col_idx][gaussian_idx]))
 
                     sns.histplot(samples, ax=ax)
+            figs.append(fig)
+        return figs
 
     @property
     def sources(self):
