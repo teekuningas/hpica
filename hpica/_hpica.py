@@ -681,7 +681,7 @@ class HPICA:
         for v in range(n_samples):
             sum_elems = []
             for i in range(n_subjects):
-                Y_i = self._wh_matrix[i] @ Ybar[i]
+                Y_i = self._wh_matrix[i] @ (Ybar[i] - self._wh_mean[i][:, np.newaxis])
                 A_i = self._A[i]
                 X_i = np.kron(X[i][np.newaxis, :], np.eye(n_sources))
 
@@ -699,8 +699,11 @@ class HPICA:
 
                 sum_elems.append(X_i.T @ pinv(W_v) @ X_i)
 
-            res = (1/n_subjects) * pinv(np.sum(sum_elems, axis=0))
+            # Note, we multiply only once with (1/n_subjects) in contrast to
+            # what is said in the paper. 
+            res = pinv(np.sum(sum_elems, axis=0))
 
+            # Return only the standard errors instead of many variance-covariance matrices.
             SE_v = np.array([np.sqrt(res[ix, ix]) for ix in range(len(res))]).reshape(self._Beta[v].shape)
             SE.append(SE_v)
         SE = np.array(SE)
