@@ -18,7 +18,7 @@ colors = ['red', 'steelblue', 'green', 'pink']
 ##################
 # Generate temporally independent sources and mixings
 
-n_samples = 150
+n_samples = 200
 time = np.linspace(0, 30, n_samples)
 
 # Generate sine waves (they have two-peaked nongaussian distributions)
@@ -41,6 +41,7 @@ n_sources = S.shape[1]
 
 n_subjects = 10
 groups = 5*[0] + 5*[1]
+
 subjects = []
 for idx in range(n_subjects):
 
@@ -59,20 +60,26 @@ for idx in range(n_subjects):
                   padded_template_s2.flatten(),
                   padded_template_s3.flatten()]).T
 
-    # Set up group differences for subjects 1-5 and 6-10
-    # in component 1.
     subject_s1 = s1.copy() 
-    subject_s1[0:int(len(subject_s1)/2)] += 0.25*groups[idx] - 0.25*(1 - groups[idx]) + random_state.normal(0, 0.5)
-    subject_s1[int(len(subject_s1)/2):] += -0.25*groups[idx] + 0.25*(1 - groups[idx]) + random_state.normal(0, 0.5)
-
     subject_s2 = s2.copy()
     subject_s3 = s3.copy()
+
+    # Set up group differences for subjects 1-5 and 6-10
+    # in component 1.
+    subject_s1[0:int(len(subject_s1)/2)] += 0.4*groups[idx] - 0.4*(1 - groups[idx]) + random_state.normal(0, 0.15)
+    subject_s1[int(len(subject_s1)/2):] += -0.4*groups[idx] + 0.4*(1 - groups[idx]) + random_state.normal(0, 0.15)
+
+    # Set up some source noise!
+    subject_s1 += random_state.normal(0, 0.25, size=len(subject_s1))
+    subject_s2 += random_state.normal(0, 0.25, size=len(subject_s2))
+    subject_s3 += random_state.normal(0, 0.25, size=len(subject_s3))
 
     subject_S = np.c_[subject_s1, subject_s2, subject_s3]
 
     # Generate observations from sources and mixing
+    # and add some sensor noise!
     X = np.dot(subject_S, A.T)
-    X += 0.2 * random_state.normal(size=X.shape)
+    X += 0.5 * random_state.normal(size=X.shape)
     X = (X - X.mean(axis=0)) / X.std(axis=0)
 
     subjects.append((X, A, subject_S))
@@ -223,9 +230,8 @@ Y = [data[0].T for data in subjects]
 # Set up two covariates, other containing the group information,
 # and the other being just a random zero-mean vector.
 X = np.zeros((n_subjects, 2))
-
 X[:, 0] = groups
-X[:, 1] = random_state.normal(0, 1, size=10)
+X[:, 1] = random_state.normal(0, 1, size=n_subjects)
 
 print("Fitting hierarchical TICA")
 
@@ -237,10 +243,17 @@ print("Fitting hierarchical TICA")
 
 # Note that the EM algorithm is quite sensitive to initialization. To use only 2 gaussians, 
 # you should help the algorithm with something like this: 
-n_gaussians = 2
+
+# n_gaussians = 2
+# init_values = {
+#     'mus': np.tile([-1, 1], (n_sources, 1)),
+#     'pis': np.tile([0.5, 0.5], (n_sources, 1)),
+# }
+
+n_gaussians = 3
 init_values = {
-    'mus': np.tile([-1, 1], (n_sources, 1)),
-    'pis': np.tile([0.5, 0.5], (n_sources, 1)),
+    'mus': np.tile([-1, 0, 1], (n_sources, 1)),
+    'pis': np.tile([0.4, 0.2, 0.4], (n_sources, 1)),
 }
 
 ica = HPICA(n_components=n_sources,
@@ -341,9 +354,9 @@ for source_idx in range(beta.shape[2]):
         y = beta[:, covariate_idx, source_idx]
         ax.plot(time, y)
 
-        # Draw 99% confidence interval
-        y1 = y + 2.58*se[:, covariate_idx, source_idx]
-        y2 = y - 2.58*se[:, covariate_idx, source_idx]
+        # Draw 95% confidence interval
+        y1 = y + 1.96*se[:, covariate_idx, source_idx]
+        y2 = y - 1.96*se[:, covariate_idx, source_idx]
         ax.fill_between(time, y1, y2, alpha=0.5, color='pink')
         ax.axhline(0)
 
